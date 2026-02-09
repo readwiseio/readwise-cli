@@ -1,0 +1,24 @@
+{
+  "name": "readwise-cli",
+  "version": "0.1.0",
+  "description": "Auto-discovering CLI for Readwise MCP2",
+  "type": "module",
+  "bin": {
+    "readwise-cli": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "commander": "^13",
+    "open": "^10"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/node": "^22",
+    "tsx": "^4"
+  }
+}
