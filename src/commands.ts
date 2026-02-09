@@ -87,7 +87,7 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
 
     cmd.action(async (options: Record<string, string>) => {
       try {
-        const token = await ensureValidToken();
+        const { token, authType } = await ensureValidToken();
 
         // Convert commander options back to tool arguments
         const args: Record<string, unknown> = {};
@@ -101,7 +101,7 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
           }
         }
 
-        const result = await callTool(token, tool.name, args);
+        const result = await callTool(token, authType, tool.name, args);
         displayResult(result, program.opts().json || false);
       } catch (err) {
         process.stderr.write(`\x1b[31m${(err as Error).message}\x1b[0m\n`);

@@ -178,16 +178,37 @@ export async function login(): Promise<void> {
   config.access_token = tokens.access_token;
   config.refresh_token = tokens.refresh_token;
   config.expires_at = Date.now() + tokens.expires_in * 1000;
+  config.auth_type = "oauth";
   await saveConfig(config);
 
   console.log("Login successful! Tokens saved to ~/.readwise-cli.json");
 }
 
-export async function ensureValidToken(): Promise<string> {
+export async function loginWithToken(token: string): Promise<void> {
+  const config = await loadConfig();
+  config.access_token = token;
+  config.auth_type = "token";
+  delete config.refresh_token;
+  delete config.expires_at;
+  delete config.client_id;
+  delete config.client_secret;
+  await saveConfig(config);
+
+  console.log("Token saved to ~/.readwise-cli.json");
+}
+
+export async function ensureValidToken(): Promise<{ token: string; authType: "oauth" | "token" }> {
   const config = await loadConfig();
 
   if (!config.access_token) {
-    throw new Error("Not logged in. Run `readwise-cli login` first.");
+    throw new Error("Not logged in. Run `readwise-cli login` or `readwise-cli login-with-token <token>` first.");
+  }
+
+  const authType = config.auth_type ?? "oauth";
+
+  // Access tokens don't expire and don't need refresh
+  if (authType === "token") {
+    return { token: config.access_token, authType };
   }
 
   // Refresh if expired or expiring within 60s
@@ -223,5 +244,5 @@ export async function ensureValidToken(): Promise<string> {
     await saveConfig(config);
   }
 
-  return config.access_token;
+  return { token: config.access_token, authType };
 }

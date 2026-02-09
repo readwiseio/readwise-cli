@@ -4,7 +4,7 @@
   "description": "Command-line interface for Readwise and Reader",
   "type": "module",
   "bin": {
-    "readwise-cli": "./dist/index.js"
+    "readwise": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",

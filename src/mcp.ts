@@ -4,17 +4,18 @@ import { loadConfig, saveConfig, isCacheValid, type ToolDef } from "./config.js"
 
 const MCP_URL = "https://mcp2.readwise.io/mcp";
 
-function createTransport(token: string): StreamableHTTPClientTransport {
+function createTransport(token: string, authType: "oauth" | "token"): StreamableHTTPClientTransport {
+  const authHeader = authType === "token" ? `Token ${token}` : `Bearer ${token}`;
   return new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: authHeader,
       },
     },
   });
 }
 
-export async function getTools(token: string, forceRefresh = false): Promise<ToolDef[]> {
+export async function getTools(token: string, authType: "oauth" | "token", forceRefresh = false): Promise<ToolDef[]> {
   if (!forceRefresh) {
     const config = await loadConfig();
     if (isCacheValid(config)) {
@@ -23,7 +24,7 @@ export async function getTools(token: string, forceRefresh = false): Promise<Too
   }
 
   const client = new Client({ name: "readwise-cli", version: "0.1.0" });
-  const transport = createTransport(token);
+  const transport = createTransport(token, authType);
 
   try {
     await client.connect(transport);
@@ -47,11 +48,12 @@ export async function getTools(token: string, forceRefresh = false): Promise<Too
 
 export async function callTool(
   token: string,
+  authType: "oauth" | "token",
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> {
   const client = new Client({ name: "readwise-cli", version: "0.1.0" });
-  const transport = createTransport(token);
+  const transport = createTransport(token, authType);
 
   try {
     await client.connect(transport);

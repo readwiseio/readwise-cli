@@ -26,6 +26,7 @@ export interface Config {
   access_token?: string;
   refresh_token?: string;
   expires_at?: number;
+  auth_type?: "oauth" | "token";
   tools_cache?: {
     tools: ToolDef[];
     fetched_at: number;
