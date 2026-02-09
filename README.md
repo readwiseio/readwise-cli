@@ -122,4 +122,4 @@ npm run build
 
 ## How it works
 
-The CLI connects to the [Readwise MCP server](https://readwise.io/mcp2) internally, auto-discovers available tools, and exposes each one as a CLI command. The tool list is cached locally for 24 hours.
+The CLI connects to the [Readwise MCP server](https://mcp2.readwise.io) internally, auto-discovers available tools, and exposes each one as a CLI command. The tool list is cached locally for 24 hours.

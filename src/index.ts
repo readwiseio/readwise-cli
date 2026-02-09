@@ -10,7 +10,7 @@ const program = new Command();
 program
   .name("readwise-cli")
   .version("0.1.0")
-  .description("Auto-discovering CLI for Readwise MCP2")
+  .description("Command-line interface for Readwise and Reader")
   .option("--json", "Output raw JSON (machine-readable)")
   .option("--refresh", "Force-refresh the tool cache");
 

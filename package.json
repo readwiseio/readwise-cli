@@ -1,7 +1,7 @@
 {
   "name": "readwise-cli",
   "version": "0.1.0",
-  "description": "Auto-discovering CLI for Readwise MCP2",
+  "description": "Command-line interface for Readwise and Reader",
   "type": "module",
   "bin": {
     "readwise-cli": "./dist/index.js"
