@@ -3,11 +3,11 @@ import { ensureValidToken } from "./auth.js";
 import { callTool } from "./mcp.js";
 import type { ToolDef, SchemaProperty } from "./config.js";
 
-function toolNameToCommand(name: string): string {
+export function toolNameToCommand(name: string): string {
   return name.replace(/_/g, "-");
 }
 
-function resolveProperty(prop: SchemaProperty): SchemaProperty {
+export function resolveProperty(prop: SchemaProperty): SchemaProperty {
   if (prop.anyOf) {
     const nonNull = prop.anyOf.find((v) => v.type !== "null");
     if (nonNull) {
@@ -48,7 +48,7 @@ function parseValue(value: string, prop: SchemaProperty): unknown {
   return value;
 }
 
-function displayResult(result: { content: Array<{ type: string; text?: string }>; isError?: boolean }, json: boolean): void {
+export function displayResult(result: { content: Array<{ type: string; text?: string }>; isError?: boolean }, json: boolean): void {
   if (result.isError) {
     for (const item of result.content) {
       if (item.text) {

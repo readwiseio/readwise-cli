@@ -90,8 +90,31 @@ program
 async function main() {
   const config = await loadConfig();
   const forceRefresh = process.argv.includes("--refresh");
+  const positionalArgs = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+  const hasSubcommand = positionalArgs.length > 0;
 
-  // Try to load tools if we have a token
+  // If no subcommand, TTY, and authenticated → launch TUI
+  if (!hasSubcommand && process.stdout.isTTY && config.access_token) {
+    try {
+      const { token, authType } = await ensureValidToken();
+      const tools = await getTools(token, authType, forceRefresh);
+      const { startTui } = await import("./tui/index.js");
+      await startTui(tools, token, authType);
+      return;
+    } catch (err) {
+      process.stderr.write(`\x1b[33mWarning: Could not start TUI: ${(err as Error).message}\x1b[0m\n`);
+      // Fall through to Commander help
+    }
+  }
+
+  // If no subcommand and not authenticated → hint to login
+  if (!hasSubcommand && process.stdout.isTTY && !config.access_token) {
+    await program.parseAsync(process.argv);
+    console.log("\nRun `readwise login` or `readwise login-with-token` to authenticate.");
+    return;
+  }
+
+  // Try to load tools if we have a token (for subcommand mode)
   if (config.access_token) {
     try {
       const { token, authType } = await ensureValidToken();
@@ -100,8 +123,7 @@ async function main() {
     } catch (err) {
       // Don't fail — login command should still work
       // Only warn if user is trying to run a non-login command
-      const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-      if (args.length > 0 && args[0] !== "login" && args[0] !== "login-with-token") {
+      if (hasSubcommand && positionalArgs[0] !== "login" && positionalArgs[0] !== "login-with-token") {
         process.stderr.write(`\x1b[33mWarning: Could not fetch tools: ${(err as Error).message}\x1b[0m\n`);
       }
     }
