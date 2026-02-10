@@ -7,6 +7,16 @@ function toolNameToCommand(name: string): string {
   return name.replace(/_/g, "-");
 }
 
+function resolveProperty(prop: SchemaProperty): SchemaProperty {
+  if (prop.anyOf) {
+    const nonNull = prop.anyOf.find((v) => v.type !== "null");
+    if (nonNull) {
+      return { ...prop, ...nonNull, anyOf: undefined };
+    }
+  }
+  return prop;
+}
+
 function optionFlag(name: string, prop: SchemaProperty): string {
   const flag = `--${name.replace(/_/g, "-")}`;
 
@@ -74,12 +84,14 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
     const properties = tool.inputSchema.properties || {};
     const required = new Set(tool.inputSchema.required || []);
 
-    for (const [propName, prop] of Object.entries(properties)) {
+    for (const [propName, rawProp] of Object.entries(properties)) {
+      const prop = resolveProperty(rawProp);
       const flag = optionFlag(propName, prop);
       const parts: string[] = [];
       if (prop.description) parts.push(prop.description);
       if (required.has(propName)) parts.push("(required)");
-      if (prop.enum) parts.push(`[${prop.enum.join(", ")}]`);
+      const enumValues = prop.enum || prop.items?.enum;
+      if (enumValues) parts.push(`[${enumValues.join(", ")}]`);
       if (prop.default !== undefined) parts.push(`(default: ${JSON.stringify(prop.default)})`);
 
       cmd.option(flag, parts.join(" ") || undefined);
@@ -91,9 +103,8 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
 
         // Convert commander options back to tool arguments
         const args: Record<string, unknown> = {};
-        for (const [propName, prop] of Object.entries(properties)) {
-          const optKey = propName.replace(/_/g, "-").replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-          // Commander also stores with the camelCase key based on the flag name
+        for (const [propName, rawProp] of Object.entries(properties)) {
+          const prop = resolveProperty(rawProp);
           const camelKey = propName.replace(/_/g, "-").replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
           const value = options[camelKey];
           if (value !== undefined) {

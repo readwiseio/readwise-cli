@@ -36,7 +36,7 @@ You can also pipe the token in:
 echo "$READWISE_TOKEN" | readwise login-with-token
 ```
 
-Credentials are stored in `~/.readwise.json`. OAuth tokens refresh automatically.
+Credentials are stored in `~/.readwise-cli.json`. OAuth tokens refresh automatically.
 
 ## Commands
 
@@ -63,8 +63,8 @@ readwise readwise-search-highlights --vector-search-term "spaced repetition"
 readwise reader-list-documents --limit 5
 readwise reader-list-documents --category article --location later
 readwise reader-list-documents --tag "to-review"
-readwise reader-get-document-details --id <document-id>
-readwise reader-get-document-highlights --id <document-id>
+readwise reader-get-document-details --document-id <document-id>
+readwise reader-get-document-highlights --document-id <document-id>
 ```
 
 ### Save a document
@@ -83,8 +83,8 @@ readwise reader-create-document \
 ```bash
 # Tags
 readwise reader-list-tags
-readwise reader-add-tags-to-document --document-id <id> --tags "important,review"
-readwise reader-remove-tags-from-document --document-id <id> --tags "old-tag"
+readwise reader-add-tags-to-document --document-id <id> --tag-names "important,review"
+readwise reader-remove-tags-from-document --document-id <id> --tag-names "old-tag"
 
 # Move between locations (new/later/shortlist/archive)
 readwise reader-move-document --document-id <id> --location archive
@@ -97,9 +97,9 @@ readwise reader-set-document-notes --document-id <id> --notes "Updated notes"
 ### Highlight management
 
 ```bash
-readwise reader-add-tags-to-highlight --highlight-id <id> --tags "key-insight"
-readwise reader-remove-tags-from-highlight --highlight-id <id> --tags "old-tag"
-readwise reader-set-highlight-notes --highlight-id <id> --notes "This connects to..."
+readwise reader-add-tags-to-highlight --document-id <id> --highlight-document-id <id> --tag-names "key-insight"
+readwise reader-remove-tags-from-highlight --document-id <id> --highlight-document-id <id> --tag-names "old-tag"
+readwise reader-set-highlight-notes --document-id <id> --highlight-document-id <id> --notes "This connects to..."
 ```
 
 ### Export
