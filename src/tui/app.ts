@@ -268,7 +268,7 @@ function renderCommandList(state: AppState): string[] {
 
   // Logo
   for (let i = 0; i < LOGO.length; i++) {
-    const logoLine = style.yellow(LOGO[i]!);
+    const logoLine = style.blue(LOGO[i]!);
     if (i === Math.floor(LOGO.length / 2) - 1) {
       content.push(` ${logoLine}  ${style.boldYellow("Readwise")}`);
     } else if (i === Math.floor(LOGO.length / 2)) {

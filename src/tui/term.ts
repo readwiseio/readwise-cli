@@ -15,6 +15,7 @@ export const style = {
   green: (s: string) => `${ESC}[32m${s}${ESC}[39m`,
   cyan: (s: string) => `${ESC}[36m${s}${ESC}[39m`,
   boldYellow: (s: string) => `${ESC}[1;33m${s}${ESC}[22;39m`,
+  blue: (s: string) => `${ESC}[38;2;60;110;253m${s}${ESC}[39m`,
 };
 
 // --- Screen control ---
