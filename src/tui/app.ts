@@ -174,11 +174,11 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 
 const shuffledLoadingMessages = (() => {
   const msgs = [
-    "Executing…", "Working on it…", "Fetching data…", "Processing…",
-    "Reaching out to Readwise…", "Loading…", "Crunching…", "Almost there…",
-    "Querying…", "Thinking…", "On it…", "Connecting…",
-    "Gathering results…", "Brewing…", "Searching…", "Talking to the API…",
-    "Hang tight…", "Doing the thing…", "One moment…", "Just a sec…",
+    "Fetching data…", "Processing…", "Reaching out to Readwise…",
+    "Loading…", "Crunching…", "Almost there…", "Querying…",
+    "Thinking…", "Connecting…", "Gathering results…", "Brewing…",
+    "Searching…", "Talking to the API…", "Hang tight…",
+    "One moment…", "Just a sec…",
   ];
   for (let i = msgs.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
