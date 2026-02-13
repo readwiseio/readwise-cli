@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { loadConfig, saveConfig, isCacheValid, type ToolDef } from "./config.js";
+import { VERSION } from "./version.js";
 
 const MCP_URL = "https://mcp2.readwise.io/mcp";
 
@@ -23,7 +24,7 @@ export async function getTools(token: string, authType: "oauth" | "token", force
     }
   }
 
-  const client = new Client({ name: "readwise-cli", version: "0.1.0" });
+  const client = new Client({ name: "readwise-cli", version: VERSION });
   const transport = createTransport(token, authType);
 
   try {
@@ -52,7 +53,7 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> {
-  const client = new Client({ name: "readwise-cli", version: "0.1.0" });
+  const client = new Client({ name: "readwise-cli", version: VERSION });
   const transport = createTransport(token, authType);
 
   try {

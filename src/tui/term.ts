@@ -73,6 +73,11 @@ export function parseKey(data: Buffer): KeyEvent {
   if (s === `${ESC}[Z`) return { raw: s, name: "tab", shift: true, ctrl: false };
   if (s === ESC || s === `${ESC}${ESC}`) return { raw: s, name: "escape", shift: false, ctrl: false };
 
+  // Shift+Enter sequences
+  if (s === `${ESC}[13;2u`) return { raw: s, name: "return", shift: true, ctrl: false };  // CSI u / kitty
+  if (s === `${ESC}[27;2;13~`) return { raw: s, name: "return", shift: true, ctrl: false }; // xterm
+  if (s === `${ESC}OM`) return { raw: s, name: "return", shift: true, ctrl: false };         // misc terminals
+
   // Single characters
   if (s === "\r" || s === "\n") return { raw: s, name: "return", shift: false, ctrl: false };
   if (s === "\t") return { raw: s, name: "tab", shift: false, ctrl: false };

@@ -5,6 +5,7 @@ import { login, loginWithToken, ensureValidToken } from "./auth.js";
 import { getTools } from "./mcp.js";
 import { registerTools } from "./commands.js";
 import { loadConfig } from "./config.js";
+import { VERSION } from "./version.js";
 
 function readHiddenInput(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -49,7 +50,7 @@ const program = new Command();
 
 program
   .name("readwise-cli")
-  .version("0.1.0")
+  .version(VERSION)
   .description("Command-line interface for Readwise and Reader")
   .option("--json", "Output raw JSON (machine-readable)")
   .option("--refresh", "Force-refresh the tool cache");
