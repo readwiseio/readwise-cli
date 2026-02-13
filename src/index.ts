@@ -10,7 +10,7 @@ import { VERSION } from "./version.js";
 function readHiddenInput(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!process.stdin.isTTY) {
-      // Piped input (e.g. echo $TOKEN | readwise-cli login-with-token)
+      // Piped input (e.g. echo $TOKEN | readwise login-with-token)
       const rl = createInterface({ input: process.stdin });
       rl.once("line", (line) => { resolve(line.trim()); rl.close(); });
       rl.once("close", () => resolve(""));
@@ -49,7 +49,7 @@ function readHiddenInput(prompt: string): Promise<string> {
 const program = new Command();
 
 program
-  .name("readwise-cli")
+  .name("readwise")
   .version(VERSION)
   .description("Command-line interface for Readwise and Reader")
   .option("--json", "Output raw JSON (machine-readable)")

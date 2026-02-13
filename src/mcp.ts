@@ -24,7 +24,7 @@ export async function getTools(token: string, authType: "oauth" | "token", force
     }
   }
 
-  const client = new Client({ name: "readwise-cli", version: VERSION });
+  const client = new Client({ name: "readwise", version: VERSION });
   const transport = createTransport(token, authType);
 
   try {
@@ -52,14 +52,14 @@ export async function callTool(
   authType: "oauth" | "token",
   name: string,
   args: Record<string, unknown>,
-): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> {
-  const client = new Client({ name: "readwise-cli", version: VERSION });
+): Promise<{ content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean }> {
+  const client = new Client({ name: "readwise", version: VERSION });
   const transport = createTransport(token, authType);
 
   try {
     await client.connect(transport);
     const result = await client.callTool({ name, arguments: args });
-    return result as { content: Array<{ type: string; text?: string }>; isError?: boolean };
+    return result as { content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
   } finally {
     await client.close();
   }

@@ -776,7 +776,7 @@ function renderFormEditMode(
   } else if (dateFmt) {
     footer = style.dim("←→ part  ↑↓ adjust  t today  enter confirm  esc cancel");
   } else if (isArrayEnum) {
-    footer = style.dim("space toggle  enter confirm  esc cancel");
+    footer = style.dim("space toggle  enter select  esc confirm");
   } else if (isArrayText) {
     footer = style.dim("↑↓ navigate  enter add/edit  backspace delete  esc confirm");
   } else if (eVals || isBool) {
@@ -1294,8 +1294,16 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
     return { formSearchQuery: "", formSearchCursorPos: 0, formFilteredIndices: f, formListCursor: defaultFormCursor(fields, f, updatedValues ?? formValues), formScrollTop: 0, formShowRequired: false };
   };
 
-  // Escape: cancel edit (for tag editor, escape confirms since items are saved live)
+  // Escape: cancel edit (for multi-select and tag editor, escape confirms since items are saved live)
   if (key.name === "escape") {
+    const isArrayEnum = field.prop.type === "array" && !!field.prop.items?.enum;
+    if (isArrayEnum && enumValues) {
+      // Confirm current selections
+      const selected = [...state.formEnumSelected].sort((a, b) => a - b).map((i) => enumValues[i]!);
+      const val = selected.join(", ");
+      const newValues = { ...formValues, [field.name]: val };
+      return { ...state, formEditing: false, formEditFieldIdx: -1, formValues: newValues, formEnumSelected: new Set(), ...resetPalette(newValues) };
+    }
     return { ...state, formEditing: false, formEditFieldIdx: -1, formInputBuf: "", ...resetPalette() };
   }
 
@@ -1419,10 +1427,10 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
   const isArrayEnum = field.prop.type === "array" && !!field.prop.items?.enum;
   if (isArrayEnum && enumValues) {
     if (key.name === "up") {
-      return { ...state, formEnumCursor: Math.max(0, formEnumCursor - 1) };
+      return { ...state, formEnumCursor: formEnumCursor <= 0 ? enumValues.length - 1 : formEnumCursor - 1 };
     }
     if (key.name === "down") {
-      return { ...state, formEnumCursor: Math.min(enumValues.length - 1, formEnumCursor + 1) };
+      return { ...state, formEnumCursor: formEnumCursor >= enumValues.length - 1 ? 0 : formEnumCursor + 1 };
     }
     if (key.name === " " || key.raw === " ") {
       // Toggle selection
@@ -1432,8 +1440,10 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
       return { ...state, formEnumSelected: next };
     }
     if (key.name === "return") {
-      // Confirm: join selected values
-      const selected = [...state.formEnumSelected].sort((a, b) => a - b).map((i) => enumValues[i]!);
+      // Select current option and exit
+      const next = new Set(state.formEnumSelected);
+      next.add(formEnumCursor);
+      const selected = [...next].sort((a, b) => a - b).map((i) => enumValues[i]!);
       const val = selected.join(", ");
       const newValues = { ...formValues, [field.name]: val };
       return { ...state, formEditing: false, formEditFieldIdx: -1, formValues: newValues, formEnumSelected: new Set(), ...resetPalette() };
@@ -1445,10 +1455,10 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
   if (enumValues || isBool) {
     const choices = isBool ? ["true", "false"] : enumValues!;
     if (key.name === "up") {
-      return { ...state, formEnumCursor: Math.max(0, formEnumCursor - 1) };
+      return { ...state, formEnumCursor: formEnumCursor <= 0 ? choices.length - 1 : formEnumCursor - 1 };
     }
     if (key.name === "down") {
-      return { ...state, formEnumCursor: Math.min(choices.length - 1, formEnumCursor + 1) };
+      return { ...state, formEnumCursor: formEnumCursor >= choices.length - 1 ? 0 : formEnumCursor + 1 };
     }
     if (key.name === "return") {
       const val = choices[formEnumCursor]!;

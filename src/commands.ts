@@ -70,7 +70,7 @@ function parseValue(value: string, prop: SchemaProperty): unknown {
   return value;
 }
 
-export function displayResult(result: { content: Array<{ type: string; text?: string }>; isError?: boolean }, json: boolean): void {
+export function displayResult(result: { content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean }, json: boolean): void {
   if (result.isError) {
     for (const item of result.content) {
       if (item.text) {
@@ -81,8 +81,11 @@ export function displayResult(result: { content: Array<{ type: string; text?: st
     return;
   }
 
+  // Prefer text content; fall back to structuredContent for empty results
+  let printed = false;
   for (const item of result.content) {
     if (item.type === "text" && item.text) {
+      printed = true;
       if (json) {
         process.stdout.write(item.text + "\n");
       } else {
@@ -93,6 +96,15 @@ export function displayResult(result: { content: Array<{ type: string; text?: st
           console.log(item.text);
         }
       }
+    }
+  }
+
+  if (!printed && result.structuredContent) {
+    const data = result.structuredContent;
+    if (json) {
+      process.stdout.write(JSON.stringify(data) + "\n");
+    } else {
+      console.log(JSON.stringify(data, null, 2));
     }
   }
 }

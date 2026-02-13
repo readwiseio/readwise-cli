@@ -122,7 +122,7 @@ readwise reader-export-documents --since-updated "2024-06-01T00:00:00Z"
 Pipe results to `jq`:
 
 ```bash
-readwise reader-list-documents --limit 3 --json | jq '.[].title'
+readwise reader-list-documents --limit 3 --json | jq '.results[].title'
 ```
 
 ## Development
