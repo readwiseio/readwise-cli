@@ -9,6 +9,7 @@ export interface ToolDef {
     type: string;
     properties?: Record<string, SchemaProperty>;
     required?: string[];
+    $defs?: Record<string, SchemaProperty>;
   };
 }
 
@@ -17,9 +18,12 @@ export interface SchemaProperty {
   format?: string;
   description?: string;
   enum?: string[];
-  items?: { type?: string; enum?: string[] };
+  items?: SchemaProperty;
   default?: unknown;
   anyOf?: SchemaProperty[];
+  $ref?: string;
+  properties?: Record<string, SchemaProperty>;
+  required?: string[];
 }
 
 export interface Config {

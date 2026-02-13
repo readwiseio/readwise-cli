@@ -7,14 +7,36 @@ export function toolNameToCommand(name: string): string {
   return name.replace(/_/g, "-");
 }
 
-export function resolveProperty(prop: SchemaProperty): SchemaProperty {
-  if (prop.anyOf) {
-    const nonNull = prop.anyOf.find((v) => v.type !== "null");
-    if (nonNull) {
-      return { ...prop, ...nonNull, anyOf: undefined };
-    }
+export function resolveRef(prop: SchemaProperty, defs?: Record<string, SchemaProperty>): SchemaProperty {
+  if (prop.$ref && defs) {
+    const name = prop.$ref.replace("#/$defs/", "");
+    const resolved = defs[name];
+    if (resolved) return { ...resolved, description: prop.description || resolved.description };
   }
   return prop;
+}
+
+export function resolveProperty(prop: SchemaProperty, defs?: Record<string, SchemaProperty>): SchemaProperty {
+  let p = resolveRef(prop, defs);
+  if (p.anyOf) {
+    const nonNull = p.anyOf.find((v) => v.type !== "null");
+    if (nonNull) {
+      p = { ...p, ...resolveRef(nonNull, defs), anyOf: undefined };
+    }
+  }
+  // Resolve items.$ref for array types
+  if (p.type === "array" && p.items) {
+    p = { ...p, items: resolveRef(p.items, defs) };
+    // Also resolve anyOf inside items (e.g. items wrapped in anyOf)
+    if (p.items?.anyOf) {
+      const nonNull = p.items.anyOf.find((v) => v.type !== "null");
+      if (nonNull) {
+        const resolvedItem = resolveRef(nonNull, defs);
+        p = { ...p, items: { ...p.items, ...resolvedItem, anyOf: undefined } };
+      }
+    }
+  }
+  return p;
 }
 
 function optionFlag(name: string, prop: SchemaProperty): string {
@@ -83,9 +105,10 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
 
     const properties = tool.inputSchema.properties || {};
     const required = new Set(tool.inputSchema.required || []);
+    const defs = tool.inputSchema.$defs;
 
     for (const [propName, rawProp] of Object.entries(properties)) {
-      const prop = resolveProperty(rawProp);
+      const prop = resolveProperty(rawProp, defs);
       const flag = optionFlag(propName, prop);
       const parts: string[] = [];
       if (prop.description) parts.push(prop.description);
@@ -104,7 +127,7 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
         // Convert commander options back to tool arguments
         const args: Record<string, unknown> = {};
         for (const [propName, rawProp] of Object.entries(properties)) {
-          const prop = resolveProperty(rawProp);
+          const prop = resolveProperty(rawProp, defs);
           const camelKey = propName.replace(/_/g, "-").replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
           const value = options[camelKey];
           if (value !== undefined) {
