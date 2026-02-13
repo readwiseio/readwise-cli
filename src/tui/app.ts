@@ -22,6 +22,7 @@ interface FormStackEntry {
   parentValues: Record<string, string>;
   parentNameColWidth: number;
   parentTitle: string;        // for breadcrumb
+  editIndex: number;          // -1 = adding new item, >= 0 = editing existing item at this index
 }
 
 function isArrayOfObjects(prop: SchemaProperty): boolean {
@@ -224,11 +225,15 @@ function popFormStack(state: AppState): AppState {
       subObj[f.name] = val;
     }
   }
-  // Append to parent array
+  // Append or replace in parent array
   const parentVal = entry.parentValues[entry.parentFieldName] || "[]";
   let parentArr: unknown[] = [];
   try { parentArr = JSON.parse(parentVal); } catch { /* */ }
-  parentArr.push(subObj);
+  if (entry.editIndex >= 0) {
+    parentArr[entry.editIndex] = subObj;
+  } else {
+    parentArr.push(subObj);
+  }
   const newParentValues = { ...entry.parentValues, [entry.parentFieldName]: JSON.stringify(parentArr) };
   const parentFiltered = filterFormFields(entry.parentFields, "");
   // Return to parent's array editor (editing the array-of-objects field)
@@ -610,10 +615,11 @@ function renderFormPaletteMode(
     }
   }
 
-  // Execute / Add entry
+  // Execute / Add / Save entry
   const inSubForm = state.formStack.length > 0;
-  const actionLabel = inSubForm ? "Add" : "Execute";
-  const actionIcon = inSubForm ? "+" : "▶";
+  const isEditing = inSubForm && state.formStack[state.formStack.length - 1]!.editIndex >= 0;
+  const actionLabel = inSubForm ? (isEditing ? "Save" : "Add") : "Execute";
+  const actionIcon = inSubForm ? (isEditing ? "✓" : "+") : "▶";
   content.push("");
   const executeListPos = filtered.indexOf(-1);
   const executeSelected = executeListPos === state.formListCursor;
@@ -722,20 +728,28 @@ function renderFormEditMode(
       content.push(isCursor ? style.bold(label) : label);
     }
   } else if (isArrayText) {
-    // Tag editor: show existing items + text input
+    // Tag-style list editor: navigable items + text input at bottom
     const existing = state.formValues[field.name] || "";
     const items = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean) : [];
-    for (const item of items) {
-      content.push("   " + style.cyan(item) + "  " + style.dim("×"));
+    const inputIdx = items.length; // cursor index for the text input line
+    for (let i = 0; i < items.length; i++) {
+      const isCursor = i === state.formEnumCursor;
+      const prefix = isCursor ? " ❯ " : "   ";
+      const line = prefix + items[i]!;
+      content.push(isCursor ? style.boldYellow(line) : style.cyan(line));
     }
     if (items.length > 0) content.push("");
-    content.push(" " + style.yellow("❯") + " " + style.cyan(state.formInputBuf) + style.inverse(" "));
+    const onInput = state.formEnumCursor === inputIdx;
+    const inputPrefix = onInput ? " " + style.yellow("❯") + " " : "   ";
+    content.push(inputPrefix + style.cyan(state.formInputBuf) + (onInput ? style.inverse(" ") : ""));
     content.push("");
-    content.push("   " + style.dim("enter  ") + style.dim(state.formInputBuf ? "add item" : "confirm selection"));
-    if (items.length > 0) {
-      content.push("   " + style.dim("bksp   ") + style.dim(state.formInputBuf ? "delete char" : "remove last item"));
+    if (onInput) {
+      content.push("   " + style.dim("enter  ") + style.dim(state.formInputBuf ? "add item" : "confirm"));
+      content.push("   " + style.dim("esc    ") + style.dim("confirm"));
+    } else {
+      content.push("   " + style.dim("enter  ") + style.dim("edit item"));
+      content.push("   " + style.dim("bksp   ") + style.dim("remove item"));
     }
-    content.push("   " + style.dim("esc    ") + style.dim("confirm selection"));
   } else if (eVals || isBool) {
     const choices = isBool ? ["true", "false"] : eVals!;
     for (let ci = 0; ci < choices.length; ci++) {
@@ -764,7 +778,7 @@ function renderFormEditMode(
   } else if (isArrayEnum) {
     footer = style.dim("space toggle  enter confirm  esc cancel");
   } else if (isArrayText) {
-    footer = "";
+    footer = style.dim("↑↓ navigate  enter add/edit  backspace delete  esc confirm");
   } else if (eVals || isBool) {
     footer = style.dim("↑↓ navigate  enter confirm  esc cancel");
   } else {
@@ -1239,7 +1253,9 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
         return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formEnumCursor: idx >= 0 ? idx : 0 };
       }
       if (field.prop.type === "array" && !field.prop.items?.enum) {
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: "" };
+        const existing = state.formValues[field.name] || "";
+        const itemCount = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean).length : 0;
+        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: "", formEnumCursor: itemCount };
       }
       return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: state.formValues[field.name] || "" };
     }
@@ -1300,50 +1316,63 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
       return { ...state, formEnumCursor: formEnumCursor < total - 1 ? formEnumCursor + 1 : 0 };
     }
     if (key.name === "return") {
-      if (formEnumCursor === addIdx) {
-        // Push form stack and enter sub-form
-        const itemSchema = field.prop.items!;
-        const defs = state.selectedTool?.inputSchema.$defs;
-        const subProperties = itemSchema.properties || {};
-        const subRequired = new Set(itemSchema.required || []);
-        const subFields = Object.entries(subProperties).map(([name, rawProp]) => ({
-          name,
-          prop: resolveProperty(rawProp, defs),
-          required: subRequired.has(name),
-        }));
-        const subValues: Record<string, string> = {};
+      // Push form stack and enter sub-form (add new or edit existing)
+      const editingExisting = formEnumCursor < addIdx;
+      const itemSchema = field.prop.items!;
+      const defs = state.selectedTool?.inputSchema.$defs;
+      const subProperties = itemSchema.properties || {};
+      const subRequired = new Set(itemSchema.required || []);
+      const subFields = Object.entries(subProperties).map(([name, rawProp]) => ({
+        name,
+        prop: resolveProperty(rawProp, defs),
+        required: subRequired.has(name),
+      }));
+      const subValues: Record<string, string> = {};
+      if (editingExisting) {
+        // Pre-populate from existing item
+        const existingItem = items[formEnumCursor] as Record<string, unknown>;
+        for (const f of subFields) {
+          const v = existingItem[f.name];
+          if (v == null) {
+            subValues[f.name] = f.prop.default != null ? String(f.prop.default) : "";
+          } else if (Array.isArray(v)) {
+            subValues[f.name] = JSON.stringify(v);
+          } else {
+            subValues[f.name] = String(v);
+          }
+        }
+      } else {
         for (const f of subFields) {
           subValues[f.name] = f.prop.default != null ? String(f.prop.default) : "";
         }
-        const subFiltered = filterFormFields(subFields, "");
-        const toolTitle = humanLabel(state.selectedTool!.name, toolPrefix(state.selectedTool!));
-        return {
-          ...state,
-          formStack: [...state.formStack, {
-            parentFieldName: field.name,
-            parentFields: fields,
-            parentValues: formValues,
-            parentNameColWidth: state.nameColWidth,
-            parentTitle: toolTitle,
-          }],
-          fields: subFields,
-          nameColWidth: Math.max(...subFields.map((f) => f.name.length + (f.required ? 2 : 0)), 6) + 1,
-          formValues: subValues,
-          formEditing: false,
-          formEditFieldIdx: -1,
-          formSearchQuery: "",
-          formSearchCursorPos: 0,
-          formFilteredIndices: subFiltered,
-          formListCursor: defaultFormCursor(subFields, subFiltered, subValues),
-          formScrollTop: 0,
-          formShowRequired: false,
-          formEnumCursor: 0,
-          formEnumSelected: new Set(),
-          formInputBuf: "",
-        };
       }
-      // Enter on existing item — no-op for now
-      return state;
+      const subFiltered = filterFormFields(subFields, "");
+      const toolTitle = humanLabel(state.selectedTool!.name, toolPrefix(state.selectedTool!));
+      return {
+        ...state,
+        formStack: [...state.formStack, {
+          parentFieldName: field.name,
+          parentFields: fields,
+          parentValues: formValues,
+          parentNameColWidth: state.nameColWidth,
+          parentTitle: toolTitle,
+          editIndex: editingExisting ? formEnumCursor : -1,
+        }],
+        fields: subFields,
+        nameColWidth: Math.max(...subFields.map((f) => f.name.length + (f.required ? 2 : 0)), 6) + 1,
+        formValues: subValues,
+        formEditing: false,
+        formEditFieldIdx: -1,
+        formSearchQuery: "",
+        formSearchCursorPos: 0,
+        formFilteredIndices: subFiltered,
+        formListCursor: defaultFormCursor(subFields, subFiltered, subValues),
+        formScrollTop: 0,
+        formShowRequired: false,
+        formEnumCursor: 0,
+        formEnumSelected: new Set(),
+        formInputBuf: "",
+      };
     }
     if (key.name === "backspace" && formEnumCursor < items.length) {
       // Delete item at cursor
@@ -1429,30 +1458,56 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
     return state;
   }
 
-  // Array text (tag editor) mode
+  // Array text (list editor) mode
   const isArrayText = field.prop.type === "array" && !field.prop.items?.enum;
   if (isArrayText) {
     const existing = formValues[field.name] || "";
     const items = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    const inputIdx = items.length; // index of the text input line
+    const total = items.length + 1;
+
+    if (key.name === "up") {
+      return { ...state, formEnumCursor: formEnumCursor > 0 ? formEnumCursor - 1 : total - 1 };
+    }
+    if (key.name === "down") {
+      return { ...state, formEnumCursor: formEnumCursor < total - 1 ? formEnumCursor + 1 : 0 };
+    }
+
+    // Cursor on an existing item
+    if (formEnumCursor < inputIdx) {
+      if (key.name === "return") {
+        // Edit: move item value to input, remove from list
+        const editVal = items[formEnumCursor]!;
+        const newItems = [...items];
+        newItems.splice(formEnumCursor, 1);
+        const newValues = { ...formValues, [field.name]: newItems.join(", ") };
+        return { ...state, formValues: newValues, formInputBuf: editVal, formEnumCursor: newItems.length };
+      }
+      if (key.name === "backspace") {
+        // Delete item
+        const newItems = [...items];
+        newItems.splice(formEnumCursor, 1);
+        const newValues = { ...formValues, [field.name]: newItems.join(", ") };
+        const newCursor = Math.min(formEnumCursor, newItems.length);
+        return { ...state, formValues: newValues, formEnumCursor: newCursor };
+      }
+      return state;
+    }
+
+    // Cursor on text input
     if (key.name === "return") {
       if (formInputBuf.trim()) {
-        // Add item
         items.push(formInputBuf.trim());
         const newValues = { ...formValues, [field.name]: items.join(", ") };
-        return { ...state, formValues: newValues, formInputBuf: "" };
+        return { ...state, formValues: newValues, formInputBuf: "", formEnumCursor: items.length };
       }
       // Empty input: confirm and close
-      return { ...state, formEditing: false, formEditFieldIdx: -1, ...resetPalette() };
+      const newValues = { ...formValues, [field.name]: items.join(", ") };
+      return { ...state, formEditing: false, formEditFieldIdx: -1, formValues: newValues, ...resetPalette(newValues) };
     }
     if (key.name === "backspace") {
       if (formInputBuf) {
         return { ...state, formInputBuf: formInputBuf.slice(0, -1) };
-      }
-      // Empty input + backspace: remove last item
-      if (items.length > 0) {
-        items.pop();
-        const newValues = { ...formValues, [field.name]: items.join(", ") };
-        return { ...state, formValues: newValues };
       }
       return state;
     }
