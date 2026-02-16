@@ -51,6 +51,7 @@ interface AppState {
   formEditFieldIdx: number;
   formEditing: boolean;
   formInputBuf: string;
+  formInputCursorPos: number;
   formEnumCursor: number;
   formEnumSelected: Set<number>;
   formValues: Record<string, string>;
@@ -255,6 +256,7 @@ function popFormStack(state: AppState): AppState {
     formScrollTop: 0,
     formShowRequired: false,
     formInputBuf: "",
+    formInputCursorPos: 0,
   };
 }
 
@@ -294,6 +296,37 @@ function wrapText(text: string, width: number): string[] {
   }
   if (current) lines.push(current);
   return lines.length > 0 ? lines : [""];
+}
+
+// --- Word boundary helpers ---
+
+function prevWordBoundary(buf: string, pos: number): number {
+  if (pos <= 0) return 0;
+  let i = pos - 1;
+  // Skip whitespace
+  while (i > 0 && /\s/.test(buf[i]!)) i--;
+  // Skip word chars or non-word non-space chars
+  if (i >= 0 && /\w/.test(buf[i]!)) {
+    while (i > 0 && /\w/.test(buf[i - 1]!)) i--;
+  } else {
+    while (i > 0 && !/\w/.test(buf[i - 1]!) && !/\s/.test(buf[i - 1]!)) i--;
+  }
+  return i;
+}
+
+function nextWordBoundary(buf: string, pos: number): number {
+  const len = buf.length;
+  if (pos >= len) return len;
+  let i = pos;
+  // Skip current word chars or non-word non-space chars
+  if (/\w/.test(buf[i]!)) {
+    while (i < len && /\w/.test(buf[i]!)) i++;
+  } else if (!/\s/.test(buf[i]!)) {
+    while (i < len && !/\w/.test(buf[i]!) && !/\s/.test(buf[i]!)) i++;
+  }
+  // Skip whitespace
+  while (i < len && /\s/.test(buf[i]!)) i++;
+  return i;
 }
 
 // --- Date helpers ---
@@ -758,14 +791,28 @@ function renderFormEditMode(
       content.push(sel ? style.cyan(style.bold(choiceLine)) : choiceLine);
     }
   } else {
-    // Text editor
+    // Text editor with cursor position
     const lines = state.formInputBuf.split("\n");
+    // Find cursor line and column from flat position
+    let cursorLine = 0;
+    let cursorCol = state.formInputCursorPos;
+    for (let li = 0; li < lines.length; li++) {
+      if (cursorCol <= lines[li]!.length) {
+        cursorLine = li;
+        break;
+      }
+      cursorCol -= lines[li]!.length + 1;
+    }
     for (let li = 0; li < lines.length; li++) {
       const prefix = li === 0 ? " " + style.yellow("❯") + " " : "   ";
-      if (li === lines.length - 1) {
-        content.push(prefix + style.cyan(lines[li]!) + style.inverse(" "));
+      const lineText = lines[li]!;
+      if (li === cursorLine) {
+        const before = lineText.slice(0, cursorCol);
+        const cursorChar = cursorCol < lineText.length ? lineText[cursorCol]! : " ";
+        const after = cursorCol < lineText.length ? lineText.slice(cursorCol + 1) : "";
+        content.push(prefix + style.cyan(before) + style.inverse(cursorChar) + style.cyan(after));
       } else {
-        content.push(prefix + style.cyan(lines[li]!));
+        content.push(prefix + style.cyan(lineText));
       }
     }
   }
@@ -1057,6 +1104,7 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
             formEditFieldIdx: -1,
             formEditing: false,
             formInputBuf: "",
+            formInputCursorPos: 0,
             formEnumCursor: 0,
             formEnumSelected: new Set(),
             formShowRequired: false,
@@ -1079,6 +1127,7 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
           formEditFieldIdx: -1,
           formEditing: false,
           formInputBuf: "",
+          formInputCursorPos: 0,
           formEnumCursor: 0,
           formEnumSelected: new Set(),
           formShowRequired: false,
@@ -1100,12 +1149,13 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
     return s;
   }
 
-  // Printable characters: insert into search query
-  if (!key.ctrl && key.raw && key.raw.length === 1 && key.raw >= " ") {
-    const newQuery = s.searchQuery.slice(0, s.searchCursorPos) + key.raw + s.searchQuery.slice(s.searchCursorPos);
+  // Printable characters or paste: insert into search query
+  if (key.name === "paste" || (!key.ctrl && key.raw && key.raw.length === 1 && key.raw >= " ")) {
+    const text = key.name === "paste" ? key.raw.replace(/\n/g, " ") : key.raw;
+    const newQuery = s.searchQuery.slice(0, s.searchCursorPos) + text + s.searchQuery.slice(s.searchCursorPos);
     const filtered = filterCommands(s.tools, newQuery);
     const sel = selectableIndices(filtered);
-    return { ...s, searchQuery: newQuery, searchCursorPos: s.searchCursorPos + 1, filteredItems: filtered, listCursor: sel[0] ?? 0, listScrollTop: 0 };
+    return { ...s, searchQuery: newQuery, searchCursorPos: s.searchCursorPos + text.length, filteredItems: filtered, listCursor: sel[0] ?? 0, listScrollTop: 0 };
   }
 
   return s;
@@ -1157,6 +1207,7 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
         formScrollTop: 0,
         formShowRequired: false,
         formInputBuf: "",
+        formInputCursorPos: 0,
       };
     }
     const resetFiltered = buildCommandList(state.tools);
@@ -1255,9 +1306,10 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
       if (field.prop.type === "array" && !field.prop.items?.enum) {
         const existing = state.formValues[field.name] || "";
         const itemCount = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean).length : 0;
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: "", formEnumCursor: itemCount };
+        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: "", formInputCursorPos: 0, formEnumCursor: itemCount };
       }
-      return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: state.formValues[field.name] || "" };
+      const editBuf = state.formValues[field.name] || "";
+      return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: editBuf, formInputCursorPos: editBuf.length };
     }
     return state;
   }
@@ -1272,11 +1324,12 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
     return state;
   }
 
-  // Printable characters: insert into search query
-  if (!key.ctrl && key.raw && key.raw.length === 1 && key.raw >= " ") {
-    const newQuery = formSearchQuery.slice(0, state.formSearchCursorPos) + key.raw + formSearchQuery.slice(state.formSearchCursorPos);
+  // Printable characters or paste: insert into search query
+  if (key.name === "paste" || (!key.ctrl && key.raw && key.raw.length === 1 && key.raw >= " ")) {
+    const text = key.name === "paste" ? key.raw.replace(/\n/g, " ") : key.raw;
+    const newQuery = formSearchQuery.slice(0, state.formSearchCursorPos) + text + formSearchQuery.slice(state.formSearchCursorPos);
     const newFiltered = filterFormFields(fields, newQuery);
-    return { ...state, formSearchQuery: newQuery, formSearchCursorPos: state.formSearchCursorPos + 1, formFilteredIndices: newFiltered, formListCursor: 0, formScrollTop: 0 };
+    return { ...state, formSearchQuery: newQuery, formSearchCursorPos: state.formSearchCursorPos + text.length, formFilteredIndices: newFiltered, formListCursor: 0, formScrollTop: 0 };
   }
 
   return state;
@@ -1304,7 +1357,7 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
       const newValues = { ...formValues, [field.name]: val };
       return { ...state, formEditing: false, formEditFieldIdx: -1, formValues: newValues, formEnumSelected: new Set(), ...resetPalette(newValues) };
     }
-    return { ...state, formEditing: false, formEditFieldIdx: -1, formInputBuf: "", ...resetPalette() };
+    return { ...state, formEditing: false, formEditFieldIdx: -1, formInputBuf: "", formInputCursorPos: 0, ...resetPalette() };
   }
 
   if (key.ctrl && key.name === "c") return "submit";
@@ -1380,6 +1433,7 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
         formEnumCursor: 0,
         formEnumSelected: new Set(),
         formInputBuf: "",
+        formInputCursorPos: 0,
       };
     }
     if (key.name === "backspace" && formEnumCursor < items.length) {
@@ -1491,7 +1545,7 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
         const newItems = [...items];
         newItems.splice(formEnumCursor, 1);
         const newValues = { ...formValues, [field.name]: newItems.join(", ") };
-        return { ...state, formValues: newValues, formInputBuf: editVal, formEnumCursor: newItems.length };
+        return { ...state, formValues: newValues, formInputBuf: editVal, formInputCursorPos: editVal.length, formEnumCursor: newItems.length };
       }
       if (key.name === "backspace") {
         // Delete item
@@ -1505,11 +1559,16 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
     }
 
     // Cursor on text input
+    if (key.name === "paste") {
+      // Paste: strip newlines for tag input
+      const text = key.raw.replace(/\n/g, "");
+      return { ...state, formInputBuf: formInputBuf + text, formInputCursorPos: formInputBuf.length + text.length };
+    }
     if (key.name === "return") {
       if (formInputBuf.trim()) {
         items.push(formInputBuf.trim());
         const newValues = { ...formValues, [field.name]: items.join(", ") };
-        return { ...state, formValues: newValues, formInputBuf: "", formEnumCursor: items.length };
+        return { ...state, formValues: newValues, formInputBuf: "", formInputCursorPos: 0, formEnumCursor: items.length };
       }
       // Empty input: confirm and close
       const newValues = { ...formValues, [field.name]: items.join(", ") };
@@ -1517,31 +1576,95 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
     }
     if (key.name === "backspace") {
       if (formInputBuf) {
-        return { ...state, formInputBuf: formInputBuf.slice(0, -1) };
+        return { ...state, formInputBuf: formInputBuf.slice(0, -1), formInputCursorPos: formInputBuf.length - 1 };
       }
       return state;
     }
     if (!key.ctrl && key.name !== "escape" && !key.raw.startsWith("\x1b")) {
-      return { ...state, formInputBuf: formInputBuf + key.raw };
+      return { ...state, formInputBuf: formInputBuf + key.raw, formInputCursorPos: formInputBuf.length + key.raw.length };
     }
     return state;
   }
 
   // Text editing mode
-  if (key.name === "return" && key.shift) {
-    // Shift+Enter: insert newline
-    return { ...state, formInputBuf: formInputBuf + "\n" };
+  const pos = state.formInputCursorPos;
+  if (key.name === "paste") {
+    const newBuf = formInputBuf.slice(0, pos) + key.raw + formInputBuf.slice(pos);
+    return { ...state, formInputBuf: newBuf, formInputCursorPos: pos + key.raw.length };
+  }
+  // Insert newline: Ctrl+J (\n), Shift+Enter, or Alt+Enter
+  if (key.raw === "\n" || (key.name === "return" && key.shift)) {
+    const newBuf = formInputBuf.slice(0, pos) + "\n" + formInputBuf.slice(pos);
+    return { ...state, formInputBuf: newBuf, formInputCursorPos: pos + 1 };
   }
   if (key.name === "return") {
-    // Enter: confirm
+    // Enter (\r): confirm value
     const newValues = { ...formValues, [field.name]: formInputBuf };
-    return { ...state, formEditing: false, formEditFieldIdx: -1, formValues: newValues, ...resetPalette(newValues) };
+    return { ...state, formEditing: false, formEditFieldIdx: -1, formInputCursorPos: 0, formValues: newValues, ...resetPalette(newValues) };
+  }
+  if (key.name === "left") {
+    return { ...state, formInputCursorPos: Math.max(0, pos - 1) };
+  }
+  if (key.name === "right") {
+    return { ...state, formInputCursorPos: Math.min(formInputBuf.length, pos + 1) };
+  }
+  if (key.name === "wordLeft") {
+    return { ...state, formInputCursorPos: prevWordBoundary(formInputBuf, pos) };
+  }
+  if (key.name === "wordRight") {
+    return { ...state, formInputCursorPos: nextWordBoundary(formInputBuf, pos) };
+  }
+  if (key.name === "wordBackspace") {
+    const boundary = prevWordBoundary(formInputBuf, pos);
+    const newBuf = formInputBuf.slice(0, boundary) + formInputBuf.slice(pos);
+    return { ...state, formInputBuf: newBuf, formInputCursorPos: boundary };
+  }
+  if (key.name === "up") {
+    // Move cursor up one line
+    const lines = formInputBuf.split("\n");
+    let rem = pos;
+    let line = 0;
+    for (; line < lines.length; line++) {
+      if (rem <= lines[line]!.length) break;
+      rem -= lines[line]!.length + 1;
+    }
+    if (line > 0) {
+      const col = Math.min(rem, lines[line - 1]!.length);
+      let newPos = 0;
+      for (let i = 0; i < line - 1; i++) newPos += lines[i]!.length + 1;
+      newPos += col;
+      return { ...state, formInputCursorPos: newPos };
+    }
+    return state;
+  }
+  if (key.name === "down") {
+    // Move cursor down one line
+    const lines = formInputBuf.split("\n");
+    let rem = pos;
+    let line = 0;
+    for (; line < lines.length; line++) {
+      if (rem <= lines[line]!.length) break;
+      rem -= lines[line]!.length + 1;
+    }
+    if (line < lines.length - 1) {
+      const col = Math.min(rem, lines[line + 1]!.length);
+      let newPos = 0;
+      for (let i = 0; i <= line; i++) newPos += lines[i]!.length + 1;
+      newPos += col;
+      return { ...state, formInputCursorPos: newPos };
+    }
+    return state;
   }
   if (key.name === "backspace") {
-    return { ...state, formInputBuf: formInputBuf.slice(0, -1) };
+    if (pos > 0) {
+      const newBuf = formInputBuf.slice(0, pos - 1) + formInputBuf.slice(pos);
+      return { ...state, formInputBuf: newBuf, formInputCursorPos: pos - 1 };
+    }
+    return state;
   }
   if (!key.ctrl && key.name !== "escape" && !key.raw.startsWith("\x1b")) {
-    return { ...state, formInputBuf: formInputBuf + key.raw };
+    const newBuf = formInputBuf.slice(0, pos) + key.raw + formInputBuf.slice(pos);
+    return { ...state, formInputBuf: newBuf, formInputCursorPos: pos + key.raw.length };
   }
   return state;
 }
@@ -1819,6 +1942,7 @@ export async function runApp(tools: ToolDef[]): Promise<void> {
     formEditFieldIdx: -1,
     formEditing: false,
     formInputBuf: "",
+    formInputCursorPos: 0,
     formEnumCursor: 0,
     formEnumSelected: new Set(),
     formValues: {},

@@ -22,12 +22,16 @@ export const style = {
 
 export function enterFullScreen(): void {
   process.stdout.write(`${ESC}[?1049h`); // alternate screen buffer
+  process.stdout.write(`${ESC}[?2004h`); // enable bracketed paste mode
+  process.stdout.write(`${ESC}[>1u`);    // enable kitty keyboard protocol (disambiguate mode)
   process.stdout.write(`${ESC}[?25l`);   // hide cursor
   process.stdout.write(`${ESC}[H`);      // cursor home
 }
 
 export function exitFullScreen(): void {
   process.stdout.write(`${ESC}[?25h`);   // show cursor
+  process.stdout.write(`${ESC}[<u`);     // disable kitty keyboard protocol
+  process.stdout.write(`${ESC}[?2004l`); // disable bracketed paste mode
   process.stdout.write(`${ESC}[?1049l`); // restore screen buffer
 }
 
@@ -61,6 +65,25 @@ export interface KeyEvent {
 
 export function parseKey(data: Buffer): KeyEvent {
   const s = data.toString("utf-8");
+
+  // Bracketed paste: \x1b[200~ ... \x1b[201~
+  if (s.startsWith(`${ESC}[200~`)) {
+    const content = s.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "");
+    const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    return { raw: normalized, name: "paste", shift: false, ctrl: false };
+  }
+
+  // Alt+Enter (ESC + CR/LF) — reliable newline insertion across all terminals
+  if (s === `${ESC}\r` || s === `${ESC}\n`) {
+    return { raw: s, name: "return", shift: true, ctrl: false };
+  }
+
+  // Alt+Arrow (word navigation)
+  if (s === `${ESC}[1;3D` || s === `${ESC}b`) return { raw: s, name: "wordLeft", shift: false, ctrl: false };
+  if (s === `${ESC}[1;3C` || s === `${ESC}f`) return { raw: s, name: "wordRight", shift: false, ctrl: false };
+  // Alt+Backspace (word delete)
+  if (s === `${ESC}\x7f`) return { raw: s, name: "wordBackspace", shift: false, ctrl: false };
+
   const ctrl = s.length === 1 && s.charCodeAt(0) < 32;
 
   // Escape sequences
@@ -73,10 +96,15 @@ export function parseKey(data: Buffer): KeyEvent {
   if (s === `${ESC}[Z`) return { raw: s, name: "tab", shift: true, ctrl: false };
   if (s === ESC || s === `${ESC}${ESC}`) return { raw: s, name: "escape", shift: false, ctrl: false };
 
-  // Shift+Enter sequences
-  if (s === `${ESC}[13;2u`) return { raw: s, name: "return", shift: true, ctrl: false };  // CSI u / kitty
-  if (s === `${ESC}[27;2;13~`) return { raw: s, name: "return", shift: true, ctrl: false }; // xterm
-  if (s === `${ESC}OM`) return { raw: s, name: "return", shift: true, ctrl: false };         // misc terminals
+  // Kitty keyboard protocol CSI-u encodings (when disambiguate mode is active)
+  if (s === `${ESC}[13;2u`) return { raw: s, name: "return", shift: true, ctrl: false };  // Shift+Enter
+  if (s === `${ESC}[27;2;13~`) return { raw: s, name: "return", shift: true, ctrl: false }; // Shift+Enter (xterm)
+  if (s === `${ESC}OM`) return { raw: s, name: "return", shift: true, ctrl: false };         // Shift+Enter (misc)
+  if (s === `${ESC}[27u`) return { raw: s, name: "escape", shift: false, ctrl: false };
+  if (s === `${ESC}[13u`) return { raw: s, name: "return", shift: false, ctrl: false };
+  if (s === `${ESC}[9u`) return { raw: s, name: "tab", shift: false, ctrl: false };
+  if (s === `${ESC}[9;2u`) return { raw: s, name: "tab", shift: true, ctrl: false };
+  if (s === `${ESC}[127u`) return { raw: s, name: "backspace", shift: false, ctrl: false };
 
   // Single characters
   if (s === "\r" || s === "\n") return { raw: s, name: "return", shift: false, ctrl: false };
@@ -87,6 +115,12 @@ export function parseKey(data: Buffer): KeyEvent {
 
   if (ctrl) {
     return { raw: s, name: String.fromCharCode(s.charCodeAt(0) + 96), shift: false, ctrl: true };
+  }
+
+  // Multi-character non-escape input = paste (terminal without bracketed paste support)
+  if (s.length > 1 && !s.startsWith(ESC)) {
+    const normalized = s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    return { raw: normalized, name: "paste", shift: false, ctrl: false };
   }
 
   return { raw: s, name: s, shift: false, ctrl: false };
