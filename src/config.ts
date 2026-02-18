@@ -20,6 +20,7 @@ export interface SchemaProperty {
   enum?: string[];
   items?: SchemaProperty;
   default?: unknown;
+  examples?: unknown[];
   anyOf?: SchemaProperty[];
   $ref?: string;
   properties?: Record<string, SchemaProperty>;

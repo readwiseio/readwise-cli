@@ -7,10 +7,7 @@ Commands are auto-discovered from the Readwise API, so the CLI stays up to date 
 ## Install
 
 ```bash
-git clone <repo-url> && cd readwise
-npm install
-npm run build
-npm link
+npm install -g @readwise/cli
 ```
 
 ## Setup
@@ -125,16 +122,17 @@ Pipe results to `jq`:
 readwise reader-list-documents --limit 3 --json | jq '.results[].title'
 ```
 
-## Development
-
-```bash
-# Run without building
-npx tsx src/index.ts --help
-
-# Build
-npm run build
-```
-
 ## How it works
 
 The CLI connects to the [Readwise MCP server](https://mcp2.readwise.io) internally, auto-discovers available tools, and exposes each one as a CLI command. The tool list is cached locally for 24 hours.
+
+## Development
+
+```bash
+git clone https://github.com/readwise/readwise-cli && cd readwise-cli
+npm install
+npm run build
+
+# Run without building
+npx tsx src/index.ts --help
+```

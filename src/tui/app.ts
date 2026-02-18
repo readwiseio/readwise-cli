@@ -675,13 +675,17 @@ function renderFormPaletteMode(
   // Description of highlighted field
   const highlightedIdx = filtered[state.formListCursor];
   if (highlightedIdx !== undefined && highlightedIdx >= 0 && highlightedIdx < fields.length) {
-    const desc = fields[highlightedIdx]!.prop.description;
-    if (desc) {
+    const prop = fields[highlightedIdx]!.prop;
+    if (prop.description) {
       content.push("");
-      const wrapped = wrapText(desc, innerWidth - 4);
+      const wrapped = wrapText(prop.description, innerWidth - 4);
       for (const line of wrapped) {
         content.push("   " + style.dim(line));
       }
+    }
+    if (prop.examples?.length) {
+      const exStr = prop.examples.map((e) => typeof e === "string" ? e : JSON.stringify(e)).join(", ");
+      content.push("   " + style.dim("e.g. ") + style.dim(style.cyan(truncateVisible(exStr, innerWidth - 10))));
     }
   }
 
@@ -713,6 +717,10 @@ function renderFormEditMode(
     for (const line of wrapped) {
       content.push("  " + style.dim(line));
     }
+  }
+  if (field.prop.examples?.length) {
+    const exStr = field.prop.examples.map((e) => typeof e === "string" ? e : JSON.stringify(e)).join(", ");
+    content.push("  " + style.dim("e.g. ") + style.dim(style.cyan(truncateVisible(exStr, innerWidth - 10))));
   }
   content.push("");
 
@@ -1151,11 +1159,13 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
 
   // Printable characters or paste: insert into search query
   if (key.name === "paste" || (!key.ctrl && key.raw && key.raw.length === 1 && key.raw >= " ")) {
-    const text = key.name === "paste" ? key.raw.replace(/\n/g, " ") : key.raw;
-    const newQuery = s.searchQuery.slice(0, s.searchCursorPos) + text + s.searchQuery.slice(s.searchCursorPos);
-    const filtered = filterCommands(s.tools, newQuery);
-    const sel = selectableIndices(filtered);
-    return { ...s, searchQuery: newQuery, searchCursorPos: s.searchCursorPos + text.length, filteredItems: filtered, listCursor: sel[0] ?? 0, listScrollTop: 0 };
+    const text = (key.name === "paste" ? key.raw.replace(/[\x00-\x1f\x7f]/g, "") : key.raw) || "";
+    if (text) {
+      const newQuery = s.searchQuery.slice(0, s.searchCursorPos) + text + s.searchQuery.slice(s.searchCursorPos);
+      const filtered = filterCommands(s.tools, newQuery);
+      const sel = selectableIndices(filtered);
+      return { ...s, searchQuery: newQuery, searchCursorPos: s.searchCursorPos + text.length, filteredItems: filtered, listCursor: sel[0] ?? 0, listScrollTop: 0 };
+    }
   }
 
   return s;
@@ -1326,10 +1336,12 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
 
   // Printable characters or paste: insert into search query
   if (key.name === "paste" || (!key.ctrl && key.raw && key.raw.length === 1 && key.raw >= " ")) {
-    const text = key.name === "paste" ? key.raw.replace(/\n/g, " ") : key.raw;
-    const newQuery = formSearchQuery.slice(0, state.formSearchCursorPos) + text + formSearchQuery.slice(state.formSearchCursorPos);
-    const newFiltered = filterFormFields(fields, newQuery);
-    return { ...state, formSearchQuery: newQuery, formSearchCursorPos: state.formSearchCursorPos + text.length, formFilteredIndices: newFiltered, formListCursor: 0, formScrollTop: 0 };
+    const text = (key.name === "paste" ? key.raw.replace(/[\x00-\x1f\x7f]/g, "") : key.raw) || "";
+    if (text) {
+      const newQuery = formSearchQuery.slice(0, state.formSearchCursorPos) + text + formSearchQuery.slice(state.formSearchCursorPos);
+      const newFiltered = filterFormFields(fields, newQuery);
+      return { ...state, formSearchQuery: newQuery, formSearchCursorPos: state.formSearchCursorPos + text.length, formFilteredIndices: newFiltered, formListCursor: 0, formScrollTop: 0 };
+    }
   }
 
   return state;
@@ -1581,7 +1593,8 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
       return state;
     }
     if (!key.ctrl && key.name !== "escape" && !key.raw.startsWith("\x1b")) {
-      return { ...state, formInputBuf: formInputBuf + key.raw, formInputCursorPos: formInputBuf.length + key.raw.length };
+      const clean = key.raw.replace(/[\x00-\x1f\x7f]/g, ""); // strip control chars for tags
+      if (clean) return { ...state, formInputBuf: formInputBuf + clean, formInputCursorPos: formInputBuf.length + clean.length };
     }
     return state;
   }
@@ -1663,8 +1676,12 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
     return state;
   }
   if (!key.ctrl && key.name !== "escape" && !key.raw.startsWith("\x1b")) {
-    const newBuf = formInputBuf.slice(0, pos) + key.raw + formInputBuf.slice(pos);
-    return { ...state, formInputBuf: newBuf, formInputCursorPos: pos + key.raw.length };
+    // Preserve newlines in pasted text (multi-line supported), strip other control chars
+    const clean = key.raw.replace(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/g, "");
+    if (clean) {
+      const newBuf = formInputBuf.slice(0, pos) + clean + formInputBuf.slice(pos);
+      return { ...state, formInputBuf: newBuf, formInputCursorPos: pos + clean.length };
+    }
   }
   return state;
 }

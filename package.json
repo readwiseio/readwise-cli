@@ -1,11 +1,17 @@
 {
   "name": "readwise-cli",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Command-line interface for Readwise and Reader",
   "type": "module",
   "bin": {
     "readwise": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "tsconfig.json"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
@@ -17,8 +23,8 @@
     "open": "^10"
   },
   "devDependencies": {
-    "typescript": "^5",
     "@types/node": "^22",
-    "tsx": "^4"
+    "tsx": "^4",
+    "typescript": "^5"
   }
 }
