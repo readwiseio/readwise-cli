@@ -185,6 +185,18 @@ function defaultFormCursor(fields: FormField[], filtered: number[], values: Reco
   return firstBlank >= 0 ? firstBlank : executeIndex(filtered);
 }
 
+function fieldTypeBadge(prop: SchemaProperty): string {
+  if (isArrayOfObjects(prop)) return "form";
+  if (dateFieldFormat(prop)) return "date";
+  const eVals = prop.enum || prop.items?.enum;
+  if (prop.type === "boolean") return "yes/no";
+  if (eVals && prop.type === "array") return "multi";
+  if (eVals) return "select";
+  if (prop.type === "array") return "list";
+  if (prop.type === "integer" || prop.type === "number") return "number";
+  return "text";
+}
+
 function formFieldValueDisplay(value: string, maxWidth: number): string {
   if (!value) return style.dim("–");
   // JSON array display (for array-of-objects)
@@ -544,7 +556,7 @@ function renderCommandList(state: AppState): string[] {
 
   const footer = state.quitConfirm
     ? style.yellow("Press q or esc again to quit")
-    : style.dim("type to search  ↑↓ navigate  enter select  esc clear/quit");
+    : style.dim("type to search · ↑↓ navigate · enter select · esc quit");
 
   return renderLayout({
     breadcrumb: style.boldYellow("Readwise"),
@@ -591,6 +603,23 @@ function renderFormPaletteMode(
       content.push("  " + style.dim(line));
     }
   }
+
+  // Progress indicator for required fields
+  const requiredFields = fields.filter((f) => f.required);
+  if (requiredFields.length > 0) {
+    const filledRequired = requiredFields.filter((f) => {
+      const val = state.formValues[f.name]?.trim();
+      if (!val) return false;
+      if (isArrayOfObjects(f.prop)) {
+        try { return JSON.parse(val).length > 0; } catch { return false; }
+      }
+      return true;
+    });
+    const allFilled = filledRequired.length === requiredFields.length;
+    const progressText = `${filledRequired.length} of ${requiredFields.length} required`;
+    content.push("  " + (allFilled ? style.green("✓ " + progressText) : style.dim(progressText)));
+  }
+
   content.push("");
 
   // Search input
@@ -605,14 +634,16 @@ function renderFormPaletteMode(
   content.push(" " + style.yellow("❯") + " " + before + style.inverse(cursorChar) + after);
   content.push("");
 
-  // Compute maxLabelWidth
+  // Compute maxLabelWidth (account for status icon prefix: "✓ " or "○ ")
   const maxLabelWidth = Math.max(
     ...fields.map((f) => f.name.length + (f.required ? 2 : 0)),
     6,
   ) + 1;
 
-  // Value display width budget: innerWidth - prefix(3) - label - gap(2)
-  const valueAvail = Math.max(0, innerWidth - 3 - maxLabelWidth - 2);
+  // Badge width: " text" = ~7 chars max
+  const badgeWidth = 8;
+  // Value display width budget: innerWidth - prefix(3) - icon(2) - label - gap(2) - badge
+  const valueAvail = Math.max(0, innerWidth - 3 - 2 - maxLabelWidth - 2 - badgeWidth);
 
   const headerUsed = content.length;
   // Reserve space for: blank + Execute + blank + description (up to 4 lines)
@@ -633,17 +664,33 @@ function renderFormPaletteMode(
 
     for (const fieldIdx of visible) {
       const field = fields[fieldIdx]!;
-      const nameLabel = field.name + (field.required ? " *" : "");
-      const paddedName = nameLabel.padEnd(maxLabelWidth);
       const val = state.formValues[field.name] || "";
-      const valStr = formFieldValueDisplay(val, valueAvail);
+      const isFilled = !!val.trim();
       const listPos = filtered.indexOf(fieldIdx);
       const selected = listPos === state.formListCursor;
-      const prefix = selected ? " ❯ " : "   ";
+
+      // Status icon: ✓ filled, ○ empty
+      const statusIcon = isFilled ? style.green("✓") : style.dim("○");
+
+      // Field name with aligned padding
+      const plainLabel = field.name + (field.required ? " *" : "");
+      const padded = plainLabel.padEnd(maxLabelWidth);
+
+      // Value display
+      const valStr = formFieldValueDisplay(val, valueAvail);
+
+      // Type badge
+      const badge = style.dim(fieldTypeBadge(field.prop));
+
+      const cursor = selected ? " ❯ " : "   ";
+      // When not selected and required+empty, show the * in red
+      const displayName = (!selected && field.required && !isFilled)
+        ? field.name + style.red(" *") + " ".repeat(Math.max(0, maxLabelWidth - plainLabel.length))
+        : padded;
       if (selected) {
-        content.push(style.boldYellow(prefix + paddedName) + "  " + valStr);
+        content.push(style.boldYellow(cursor) + statusIcon + " " + style.boldYellow(padded) + "  " + valStr + "  " + badge);
       } else {
-        content.push(prefix + paddedName + "  " + valStr);
+        content.push(cursor + statusIcon + " " + displayName + "  " + valStr + "  " + badge);
       }
     }
   }
@@ -689,10 +736,13 @@ function renderFormPaletteMode(
     }
   }
 
+  // Footer with tab hint only when there are unfilled required fields
+  const hasUnfilledRequired = requiredFields.some((f) => !state.formValues[f.name]?.trim());
+  const tabHint = hasUnfilledRequired ? " · tab next required" : "";
   return renderLayout({
     breadcrumb: style.boldYellow("Readwise") + style.dim(" › ") + style.bold(title),
     content,
-    footer: style.dim("type to filter  ↑↓ navigate  enter edit/run  esc back"),
+    footer: style.dim("↑↓ navigate · enter edit" + tabHint + " · esc back"),
   });
 }
 
@@ -800,44 +850,55 @@ function renderFormEditMode(
     }
   } else {
     // Text editor with cursor position
-    const lines = state.formInputBuf.split("\n");
-    // Find cursor line and column from flat position
-    let cursorLine = 0;
-    let cursorCol = state.formInputCursorPos;
-    for (let li = 0; li < lines.length; li++) {
-      if (cursorCol <= lines[li]!.length) {
-        cursorLine = li;
-        break;
+    const prefix0 = " " + style.yellow("❯") + " ";
+    if (!state.formInputBuf) {
+      // Show placeholder text when input is empty
+      const placeholder = field.prop.examples?.length
+        ? String(field.prop.examples[0])
+        : field.prop.type === "integer" || field.prop.type === "number"
+        ? "enter a number…"
+        : "type here…";
+      content.push(prefix0 + style.inverse(" ") + style.dim(" " + placeholder));
+    } else {
+      const lines = state.formInputBuf.split("\n");
+      // Find cursor line and column from flat position
+      let cursorLine = 0;
+      let cursorCol = state.formInputCursorPos;
+      for (let li = 0; li < lines.length; li++) {
+        if (cursorCol <= lines[li]!.length) {
+          cursorLine = li;
+          break;
+        }
+        cursorCol -= lines[li]!.length + 1;
       }
-      cursorCol -= lines[li]!.length + 1;
-    }
-    for (let li = 0; li < lines.length; li++) {
-      const prefix = li === 0 ? " " + style.yellow("❯") + " " : "   ";
-      const lineText = lines[li]!;
-      if (li === cursorLine) {
-        const before = lineText.slice(0, cursorCol);
-        const cursorChar = cursorCol < lineText.length ? lineText[cursorCol]! : " ";
-        const after = cursorCol < lineText.length ? lineText.slice(cursorCol + 1) : "";
-        content.push(prefix + style.cyan(before) + style.inverse(cursorChar) + style.cyan(after));
-      } else {
-        content.push(prefix + style.cyan(lineText));
+      for (let li = 0; li < lines.length; li++) {
+        const prefix = li === 0 ? prefix0 : "   ";
+        const lineText = lines[li]!;
+        if (li === cursorLine) {
+          const before = lineText.slice(0, cursorCol);
+          const cursorChar = cursorCol < lineText.length ? lineText[cursorCol]! : " ";
+          const after = cursorCol < lineText.length ? lineText.slice(cursorCol + 1) : "";
+          content.push(prefix + style.cyan(before) + style.inverse(cursorChar) + style.cyan(after));
+        } else {
+          content.push(prefix + style.cyan(lineText));
+        }
       }
     }
   }
 
   let footer: string;
   if (isArrayObj) {
-    footer = style.dim("↑↓ navigate  enter add/select  backspace delete  esc back");
+    footer = style.dim("↑↓ navigate · enter add/edit · backspace delete · esc back");
   } else if (dateFmt) {
-    footer = style.dim("←→ part  ↑↓ adjust  t today  enter confirm  esc cancel");
+    footer = style.dim("←→ part · ↑↓ adjust · t today · enter confirm · esc cancel");
   } else if (isArrayEnum) {
-    footer = style.dim("space toggle  enter select  esc confirm");
+    footer = style.dim("space toggle · enter select · esc confirm");
   } else if (isArrayText) {
-    footer = style.dim("↑↓ navigate  enter add/edit  backspace delete  esc confirm");
+    footer = style.dim("↑↓ navigate · enter add/edit · backspace delete · esc confirm");
   } else if (eVals || isBool) {
-    footer = style.dim("↑↓ navigate  enter confirm  esc cancel");
+    footer = style.dim("↑↓ navigate · enter confirm · esc cancel");
   } else {
-    footer = style.dim("enter confirm  shift+enter newline  esc cancel");
+    footer = style.dim("enter confirm · shift+enter newline · esc cancel");
   }
 
   return renderLayout({
@@ -915,7 +976,7 @@ function renderResults(state: AppState): string[] {
       content,
       footer: state.quitConfirm
         ? style.yellow("Press q again to quit")
-        : style.dim("enter/esc back  q quit"),
+        : style.dim("enter/esc back · q quit"),
     });
   }
 
@@ -936,7 +997,7 @@ function renderResults(state: AppState): string[] {
       content,
       footer: state.quitConfirm
         ? style.yellow("Press q again to quit")
-        : style.dim("enter/esc back  q quit"),
+        : style.dim("enter/esc back · q quit"),
     });
   }
 
@@ -968,7 +1029,7 @@ function renderResults(state: AppState): string[] {
     content,
     footer: state.quitConfirm
       ? style.yellow("Press q again to quit")
-      : style.dim(scrollHint + "↑↓←→ scroll  esc back  q quit"),
+      : style.dim(scrollHint + "↑↓←→ scroll · esc back · q quit"),
   });
 }
 
@@ -1223,6 +1284,40 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
     const resetFiltered = buildCommandList(state.tools);
     const resetSel = selectableIndices(resetFiltered);
     return { ...state, view: "commands", selectedTool: null, searchQuery: "", searchCursorPos: 0, filteredItems: resetFiltered, listCursor: resetSel[0] ?? 0, listScrollTop: 0 };
+  }
+
+  // Tab: jump to next unfilled required field
+  if (key.name === "tab") {
+    const unfilledRequired = filtered
+      .map((idx, listPos) => ({ idx, listPos }))
+      .filter(({ idx }) => {
+        if (idx < 0 || idx >= fields.length) return false;
+        const f = fields[idx]!;
+        if (!f.required) return false;
+        const val = state.formValues[f.name]?.trim();
+        if (!val) return true;
+        if (isArrayOfObjects(f.prop)) {
+          try { return JSON.parse(val).length === 0; } catch { return true; }
+        }
+        return false;
+      });
+    if (unfilledRequired.length > 0) {
+      // Find the next one after current cursor, wrapping around
+      const after = unfilledRequired.find((u) => u.listPos > formListCursor);
+      const target = after || unfilledRequired[0]!;
+      let scroll = state.formScrollTop;
+      const paramItems = filtered.filter((idx) => idx !== -1);
+      if (target.idx >= 0) {
+        const posInParams = paramItems.indexOf(target.idx);
+        if (posInParams < scroll) scroll = posInParams;
+        if (posInParams >= scroll + listHeight) scroll = posInParams - listHeight + 1;
+      }
+      return { ...state, formListCursor: target.listPos, formScrollTop: scroll };
+    }
+    // No unfilled required fields — jump to Execute
+    const execPos = filtered.indexOf(-1);
+    if (execPos >= 0) return { ...state, formListCursor: execPos };
+    return state;
   }
 
   // Arrow left/right: move text cursor within search input
