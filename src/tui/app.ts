@@ -56,6 +56,7 @@ interface AppState {
   formEnumSelected: Set<number>;
   formValues: Record<string, string>;
   formShowRequired: boolean;
+  formShowOptional: boolean;
   formStack: FormStackEntry[];
   // Date picker
   dateParts: number[];       // [year, month, day] or [year, month, day, hour, minute]
@@ -266,7 +267,7 @@ function popFormStack(state: AppState): AppState {
     formFilteredIndices: parentFiltered,
     formListCursor: defaultFormCursor(entry.parentFields, parentFiltered, newParentValues),
     formScrollTop: 0,
-    formShowRequired: false,
+    formShowRequired: false, formShowOptional: false,
     formInputBuf: "",
     formInputCursorPos: 0,
   };
@@ -494,7 +495,7 @@ function renderCommandList(state: AppState): string[] {
     if (i === Math.floor(LOGO.length / 2) - 1) {
       content.push(` ${logoLine}  ${style.boldYellow("Readwise")} ${style.dim("v" + VERSION)}`);
     } else if (i === Math.floor(LOGO.length / 2)) {
-      content.push(` ${logoLine}  ${style.dim("Command-line interface")}`);
+      content.push(` ${logoLine}  ${style.dim("Built for AI agents · this TUI is just for fun")}`);
     } else {
       content.push(` ${logoLine}`);
     }
@@ -555,8 +556,8 @@ function renderCommandList(state: AppState): string[] {
   }
 
   const footer = state.quitConfirm
-    ? style.yellow("Press q or esc again to quit")
-    : style.dim("type to search · ↑↓ navigate · enter select · esc quit");
+    ? style.yellow("Press again to quit")
+    : style.dim("type to search · ↑↓ navigate · enter select · esc/ctrl+c quit");
 
   return renderLayout({
     breadcrumb: style.boldYellow("Readwise"),
@@ -622,19 +623,23 @@ function renderFormPaletteMode(
 
   content.push("");
 
-  // Search input
+  // Search input (only show when there's a search query or many fields)
   const queryText = state.formSearchQuery;
-  const before = queryText.slice(0, state.formSearchCursorPos);
-  const cursorChar = state.formSearchCursorPos < queryText.length
-    ? queryText[state.formSearchCursorPos]!
-    : " ";
-  const after = state.formSearchCursorPos < queryText.length
-    ? queryText.slice(state.formSearchCursorPos + 1)
-    : "";
-  content.push(" " + style.yellow("❯") + " " + before + style.inverse(cursorChar) + after);
-  content.push("");
+  if (queryText || fields.length > 6) {
+    const before = queryText.slice(0, state.formSearchCursorPos);
+    const cursorChar = state.formSearchCursorPos < queryText.length
+      ? queryText[state.formSearchCursorPos]!
+      : " ";
+    const after = state.formSearchCursorPos < queryText.length
+      ? queryText.slice(state.formSearchCursorPos + 1)
+      : "";
+    content.push("  " + style.dim("/") + " " + before + style.inverse(cursorChar) + after);
+    content.push("");
+  } else {
+    content.push("");
+  }
 
-  // Compute maxLabelWidth (account for status icon prefix: "✓ " or "○ ")
+  // Compute maxLabelWidth (include " *" for required fields)
   const maxLabelWidth = Math.max(
     ...fields.map((f) => f.name.length + (f.required ? 2 : 0)),
     6,
@@ -642,8 +647,8 @@ function renderFormPaletteMode(
 
   // Badge width: " text" = ~7 chars max
   const badgeWidth = 8;
-  // Value display width budget: innerWidth - prefix(3) - icon(2) - label - gap(2) - badge
-  const valueAvail = Math.max(0, innerWidth - 3 - 2 - maxLabelWidth - 2 - badgeWidth);
+  // Value display width budget: innerWidth - cursor(3) - label - gap(2) - badge
+  const valueAvail = Math.max(0, innerWidth - 3 - maxLabelWidth - 2 - badgeWidth);
 
   const headerUsed = content.length;
   // Reserve space for: blank + Execute + blank + description (up to 4 lines)
@@ -652,45 +657,69 @@ function renderFormPaletteMode(
   const filtered = state.formFilteredIndices;
   const hasOnlyExecute = filtered.length === 1 && filtered[0] === -1;
 
+  // Split fields into required and optional
+  const requiredIdxs = filtered.filter((idx) => idx >= 0 && idx < fields.length && fields[idx]!.required);
+  const optionalIdxs = filtered.filter((idx) => idx >= 0 && idx < fields.length && !fields[idx]!.required);
+  const hasOptional = optionalIdxs.length > 0;
+  const showingOptional = state.formShowOptional || state.formSearchQuery;
+  // Count optional fields that have been filled
+  const filledOptionalCount = optionalIdxs.filter((idx) => !!state.formValues[fields[idx]!.name]?.trim()).length;
+
+  const renderField = (fieldIdx: number) => {
+    const field = fields[fieldIdx]!;
+    const val = state.formValues[field.name] || "";
+    const isFilled = !!val.trim();
+    const listPos = filtered.indexOf(fieldIdx);
+    const selected = listPos === state.formListCursor;
+
+    // Value display
+    const valStr = formFieldValueDisplay(val, valueAvail);
+
+    // Type badge
+    const badge = style.dim(fieldTypeBadge(field.prop));
+
+    const cursor = selected ? " ❯ " : "   ";
+    if (selected) {
+      const label = field.name + (field.required ? " *" : "");
+      content.push(style.boldYellow(cursor) + style.boldYellow(label.padEnd(maxLabelWidth)) + "  " + valStr + "  " + badge);
+    } else if (isFilled) {
+      const label = field.name + (field.required ? " *" : "");
+      content.push(cursor + style.green(label.padEnd(maxLabelWidth)) + "  " + valStr + "  " + badge);
+    } else {
+      // Unfilled: show required * in red
+      const namePart = field.name;
+      const starPart = field.required ? " *" : "";
+      const plainLabel = namePart + starPart;
+      const padAmount = Math.max(0, maxLabelWidth - plainLabel.length);
+      const displayLabel = field.required ? namePart + style.red(" *") + " ".repeat(padAmount) : plainLabel.padEnd(maxLabelWidth);
+      content.push(cursor + displayLabel + "  " + style.dim("–") + "  " + badge);
+    }
+  };
+
   if (hasOnlyExecute && state.formSearchQuery) {
     content.push("   " + style.dim("No matching parameters"));
     content.push("");
   } else {
-    // Scrolling: items before the Execute sentinel
-    const paramItems = filtered.filter((idx) => idx !== -1);
-    const visStart = state.formScrollTop;
-    const visEnd = Math.min(paramItems.length, visStart + listHeight);
-    const visible = paramItems.slice(visStart, visEnd);
+    // Required fields (always visible)
+    for (const fieldIdx of requiredIdxs) {
+      renderField(fieldIdx);
+    }
 
-    for (const fieldIdx of visible) {
-      const field = fields[fieldIdx]!;
-      const val = state.formValues[field.name] || "";
-      const isFilled = !!val.trim();
-      const listPos = filtered.indexOf(fieldIdx);
-      const selected = listPos === state.formListCursor;
-
-      // Status icon: ✓ filled, ○ empty
-      const statusIcon = isFilled ? style.green("✓") : style.dim("○");
-
-      // Field name with aligned padding
-      const plainLabel = field.name + (field.required ? " *" : "");
-      const padded = plainLabel.padEnd(maxLabelWidth);
-
-      // Value display
-      const valStr = formFieldValueDisplay(val, valueAvail);
-
-      // Type badge
-      const badge = style.dim(fieldTypeBadge(field.prop));
-
-      const cursor = selected ? " ❯ " : "   ";
-      // When not selected and required+empty, show the * in red
-      const displayName = (!selected && field.required && !isFilled)
-        ? field.name + style.red(" *") + " ".repeat(Math.max(0, maxLabelWidth - plainLabel.length))
-        : padded;
-      if (selected) {
-        content.push(style.boldYellow(cursor) + statusIcon + " " + style.boldYellow(padded) + "  " + valStr + "  " + badge);
+    // Optional fields separator
+    if (hasOptional) {
+      if (showingOptional) {
+        if (requiredIdxs.length > 0) content.push("");
+        content.push("   " + style.dim("── optional ──"));
+        const visibleOptional = optionalIdxs.slice(0, listHeight - requiredIdxs.length - 2);
+        for (const fieldIdx of visibleOptional) {
+          renderField(fieldIdx);
+        }
       } else {
-        content.push(cursor + statusIcon + " " + displayName + "  " + valStr + "  " + badge);
+        content.push("");
+        const optLabel = filledOptionalCount > 0
+          ? `── ${optionalIdxs.length} optional (${filledOptionalCount} set) · 'o' to show ──`
+          : `── ${optionalIdxs.length} optional · 'o' to show ──`;
+        content.push("   " + style.dim(optLabel));
       }
     }
   }
@@ -719,7 +748,7 @@ function renderFormPaletteMode(
     }
   }
 
-  // Description of highlighted field
+  // Description of highlighted field or Execute hint
   const highlightedIdx = filtered[state.formListCursor];
   if (highlightedIdx !== undefined && highlightedIdx >= 0 && highlightedIdx < fields.length) {
     const prop = fields[highlightedIdx]!.prop;
@@ -734,15 +763,19 @@ function renderFormPaletteMode(
       const exStr = prop.examples.map((e) => typeof e === "string" ? e : JSON.stringify(e)).join(", ");
       content.push("   " + style.dim("e.g. ") + style.dim(style.cyan(truncateVisible(exStr, innerWidth - 10))));
     }
+  } else if (highlightedIdx === -1) {
+    content.push("");
+    content.push("   " + style.dim("Press enter to run"));
   }
 
-  // Footer with tab hint only when there are unfilled required fields
+  // Footer hints
   const hasUnfilledRequired = requiredFields.some((f) => !state.formValues[f.name]?.trim());
   const tabHint = hasUnfilledRequired ? " · tab next required" : "";
+  const optionalHint = hasOptional ? " · o optional" : "";
   return renderLayout({
     breadcrumb: style.boldYellow("Readwise") + style.dim(" › ") + style.bold(title),
     content,
-    footer: style.dim("↑↓ navigate · enter edit" + tabHint + " · esc back"),
+    footer: style.dim("↑↓ navigate · enter edit" + tabHint + optionalHint + " · esc back"),
   });
 }
 
@@ -755,11 +788,24 @@ function renderFormEditMode(
 
   content.push("");
   content.push("  " + style.bold(title));
+
+  // Show tool description for context
+  const toolDesc = state.formStack.length > 0
+    ? state.formStack[state.formStack.length - 1]!.parentFields
+        .find((f) => f.name === state.formStack[state.formStack.length - 1]!.parentFieldName)
+        ?.prop.items?.description
+    : state.selectedTool!.description;
+  if (toolDesc) {
+    const wrapped = wrapText(toolDesc, innerWidth - 4);
+    for (const line of wrapped) {
+      content.push("  " + style.dim(line));
+    }
+  }
   content.push("");
 
-  // Field name
+  // Field label
   const nameLabel = field.name + (field.required ? " *" : "");
-  content.push(" " + style.boldYellow("❯ " + nameLabel));
+  content.push("  " + style.bold(nameLabel));
 
   // Field description
   if (field.prop.description) {
@@ -850,15 +896,17 @@ function renderFormEditMode(
     }
   } else {
     // Text editor with cursor position
-    const prefix0 = " " + style.yellow("❯") + " ";
+    const prefix0 = "  ";
     if (!state.formInputBuf) {
       // Show placeholder text when input is empty
       const placeholder = field.prop.examples?.length
         ? String(field.prop.examples[0])
+        : field.prop.description
+        ? field.prop.description.toLowerCase().replace(/[.!]$/, "")
         : field.prop.type === "integer" || field.prop.type === "number"
-        ? "enter a number…"
-        : "type here…";
-      content.push(prefix0 + style.inverse(" ") + style.dim(" " + placeholder));
+        ? "enter a number"
+        : "type a value";
+      content.push(prefix0 + style.inverse(" ") + style.dim(" " + placeholder + "…"));
     } else {
       const lines = state.formInputBuf.split("\n");
       // Find cursor line and column from flat position
@@ -886,6 +934,24 @@ function renderFormEditMode(
     }
   }
 
+  // Show remaining required fields hint (for text editors)
+  if (!isArrayObj && !dateFmt && !isArrayEnum && !isArrayText && !(eVals || isBool)) {
+    const requiredFields = fields.filter((f) => f.required);
+    const filledCount = requiredFields.filter((f) => {
+      if (f.name === field.name) return !!state.formInputBuf.trim(); // current field
+      return !!state.formValues[f.name]?.trim();
+    }).length;
+    const remaining = requiredFields.length - filledCount;
+    content.push("");
+    if (remaining <= 0) {
+      content.push("  " + style.dim("Then press enter to confirm → Execute"));
+    } else if (remaining === 1 && !state.formInputBuf.trim()) {
+      content.push("  " + style.dim("Type a value, then press enter"));
+    } else {
+      content.push("  " + style.dim(`${remaining} required field${remaining > 1 ? "s" : ""} remaining`));
+    }
+  }
+
   let footer: string;
   if (isArrayObj) {
     footer = style.dim("↑↓ navigate · enter add/edit · backspace delete · esc back");
@@ -898,7 +964,7 @@ function renderFormEditMode(
   } else if (eVals || isBool) {
     footer = style.dim("↑↓ navigate · enter confirm · esc cancel");
   } else {
-    footer = style.dim("enter confirm · shift+enter newline · esc cancel");
+    footer = style.dim("enter confirm · esc cancel");
   }
 
   return renderLayout({
@@ -1061,10 +1127,8 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
   const logoUsed = LOGO.length + 3;
   const listHeight = Math.max(1, contentHeight - logoUsed);
 
-  if (key.ctrl && key.name === "c") return "exit";
-
-  // Escape: clear query if non-empty, otherwise quit confirm
-  if (key.name === "escape") {
+  // Escape / ctrl+c / q: clear query if non-empty, otherwise quit confirm
+  if (key.name === "escape" || (key.ctrl && key.name === "c")) {
     if (state.searchQuery) {
       const filtered = filterCommands(state.tools, "");
       const sel = selectableIndices(filtered);
@@ -1176,10 +1240,16 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
             formInputCursorPos: 0,
             formEnumCursor: 0,
             formEnumSelected: new Set(),
-            formShowRequired: false,
+            formShowRequired: false, formShowOptional: false,
             formStack: [],
           };
         }
+
+        const filteredIndices = filterFormFields(fields, "");
+
+        // Auto-open the first blank required field for editing
+        const firstBlankRequired = fields.findIndex((f) => f.required && !formValues[f.name]?.trim());
+        const autoEdit = firstBlankRequired >= 0;
 
         return {
           ...s,
@@ -1190,16 +1260,18 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
           formValues,
           formSearchQuery: "",
           formSearchCursorPos: 0,
-          formFilteredIndices: filterFormFields(fields, ""),
-          formListCursor: defaultFormCursor(fields, filterFormFields(fields, ""), formValues),
+          formFilteredIndices: filteredIndices,
+          formListCursor: autoEdit
+            ? filteredIndices.indexOf(firstBlankRequired)
+            : defaultFormCursor(fields, filteredIndices, formValues),
           formScrollTop: 0,
-          formEditFieldIdx: -1,
-          formEditing: false,
+          formEditFieldIdx: autoEdit ? firstBlankRequired : -1,
+          formEditing: autoEdit,
           formInputBuf: "",
           formInputCursorPos: 0,
           formEnumCursor: 0,
           formEnumSelected: new Set(),
-          formShowRequired: false,
+          formShowRequired: false, formShowOptional: false,
           formStack: [],
         };
       }
@@ -1276,7 +1348,7 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
         formFilteredIndices: parentFiltered,
         formListCursor: defaultFormCursor(entry.parentFields, parentFiltered, entry.parentValues),
         formScrollTop: 0,
-        formShowRequired: false,
+        formShowRequired: false, formShowOptional: false,
         formInputBuf: "",
         formInputCursorPos: 0,
       };
@@ -1320,6 +1392,22 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
     return state;
   }
 
+  // 'o' key: toggle optional fields visibility (when not searching)
+  if (key.raw === "o" && !key.ctrl && !formSearchQuery) {
+    const optionalExists = filtered.some((idx) => idx >= 0 && idx < fields.length && !fields[idx]!.required);
+    if (optionalExists) {
+      const newShow = !state.formShowOptional;
+      if (!newShow) {
+        const curIdx = filtered[formListCursor];
+        if (curIdx !== undefined && curIdx >= 0 && curIdx < fields.length && !fields[curIdx]!.required) {
+          const execPos = filtered.indexOf(-1);
+          return { ...state, formShowOptional: false, formListCursor: execPos >= 0 ? execPos : 0 };
+        }
+      }
+      return { ...state, formShowOptional: newShow };
+    }
+  }
+
   // Arrow left/right: move text cursor within search input
   if (key.name === "left") {
     return { ...state, formSearchCursorPos: Math.max(0, state.formSearchCursorPos - 1) };
@@ -1328,29 +1416,44 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
     return { ...state, formSearchCursorPos: Math.min(formSearchQuery.length, state.formSearchCursorPos + 1) };
   }
 
-  // Arrow up/down: navigate filtered list (cycling)
+  // Helper: check if a position in filtered is navigable (skip collapsed optional fields)
+  const isNavigable = (listPos: number) => {
+    const idx = filtered[listPos];
+    if (idx === undefined) return false;
+    if (idx === -1) return true; // Execute always navigable
+    if (!state.formShowOptional && !state.formSearchQuery && idx >= 0 && idx < fields.length && !fields[idx]!.required) return false;
+    return true;
+  };
+
+  // Arrow up/down: navigate filtered list (cycling, skipping hidden items)
   if (key.name === "up") {
-    const next = formListCursor > 0 ? formListCursor - 1 : filtered.length - 1;
+    let next = formListCursor;
+    for (let i = 0; i < filtered.length; i++) {
+      next = next > 0 ? next - 1 : filtered.length - 1;
+      if (isNavigable(next)) break;
+    }
     let scroll = state.formScrollTop;
     const itemIdx = filtered[next]!;
     if (itemIdx !== -1) {
       const paramItems = filtered.filter((idx) => idx !== -1);
       const posInParams = paramItems.indexOf(itemIdx);
       if (posInParams < scroll) scroll = posInParams;
-      // Wrap to bottom: reset scroll to show end of list
       if (next > formListCursor) scroll = Math.max(0, paramItems.length - listHeight);
     }
     return { ...state, formListCursor: next, formScrollTop: scroll };
   }
   if (key.name === "down") {
-    const next = formListCursor < filtered.length - 1 ? formListCursor + 1 : 0;
+    let next = formListCursor;
+    for (let i = 0; i < filtered.length; i++) {
+      next = next < filtered.length - 1 ? next + 1 : 0;
+      if (isNavigable(next)) break;
+    }
     let scroll = state.formScrollTop;
     const itemIdx = filtered[next]!;
     if (itemIdx !== -1) {
       const paramItems = filtered.filter((idx) => idx !== -1);
       const posInParams = paramItems.indexOf(itemIdx);
       if (posInParams >= scroll + listHeight) scroll = posInParams - listHeight + 1;
-      // Wrap to top: reset scroll
       if (next < formListCursor) scroll = 0;
     } else if (next < formListCursor) {
       scroll = 0;
@@ -1536,7 +1639,7 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
         formFilteredIndices: subFiltered,
         formListCursor: defaultFormCursor(subFields, subFiltered, subValues),
         formScrollTop: 0,
-        formShowRequired: false,
+        formShowRequired: false, formShowOptional: false,
         formEnumCursor: 0,
         formEnumSelected: new Set(),
         formInputBuf: "",
@@ -1786,7 +1889,10 @@ function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
   const contentLines = (state.error || state.result).split("\n");
   const visibleCount = Math.max(1, contentHeight - 3);
 
-  if (key.ctrl && key.name === "c") return "exit";
+  if (key.ctrl && key.name === "c") {
+    if (state.quitConfirm) return "exit";
+    return { ...state, quitConfirm: true };
+  }
 
   if (key.name === "q" && !key.ctrl) {
     if (state.quitConfirm) return "exit";
@@ -1807,7 +1913,7 @@ function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
         formSearchQuery: "", formSearchCursorPos: 0,
         formFilteredIndices: filterFormFields(s.fields, ""),
         formListCursor: defaultFormCursor(s.fields, filterFormFields(s.fields, ""), s.formValues), formScrollTop: 0,
-        formEditing: false, formEditFieldIdx: -1, formShowRequired: false,
+        formEditing: false, formEditFieldIdx: -1, formShowRequired: false, formShowOptional: false,
       };
     }
     return { ...s, view: "commands" as View, selectedTool: null, result: "", error: "", resultScroll: 0, resultScrollX: 0, ...searchReset };
@@ -1843,7 +1949,7 @@ function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
         formSearchQuery: "", formSearchCursorPos: 0,
         formFilteredIndices: filterFormFields(s.fields, ""),
         formListCursor: defaultFormCursor(s.fields, filterFormFields(s.fields, ""), s.formValues), formScrollTop: 0,
-        formEditing: false, formEditFieldIdx: -1, formShowRequired: false,
+        formEditing: false, formEditFieldIdx: -1, formShowRequired: false, formShowOptional: false,
       };
     }
     return { ...s, view: "commands", selectedTool: null, result: "", error: "", resultScroll: 0, resultScrollX: 0, ...searchReset };
@@ -2058,7 +2164,7 @@ export async function runApp(tools: ToolDef[]): Promise<void> {
     formEnumCursor: 0,
     formEnumSelected: new Set(),
     formValues: {},
-    formShowRequired: false,
+    formShowRequired: false, formShowOptional: false,
     formStack: [],
     dateParts: [],
     datePartCursor: 0,
