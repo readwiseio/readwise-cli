@@ -41,11 +41,12 @@ export function paint(lines: string[]): void {
   let out = `${ESC}[H`; // cursor home
   const count = Math.min(lines.length, rows);
   for (let i = 0; i < count; i++) {
-    out += lines[i] + `${ESC}[K\n`; // line content + clear to end of line
+    out += lines[i] + `${ESC}[K`; // line content + clear to end of line
+    if (i < count - 1) out += "\n";
   }
   // Clear any remaining lines below content
   if (count < rows) {
-    out += `${ESC}[J`; // clear from cursor to end of screen
+    out += `\n${ESC}[J`; // clear from cursor to end of screen
   }
   process.stdout.write(out);
 }

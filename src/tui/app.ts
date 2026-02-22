@@ -1,9 +1,9 @@
 import type { ToolDef, SchemaProperty } from "../config.js";
-import { resolveProperty, resolveRef } from "../commands.js";
+import { resolveProperty } from "../commands.js";
 import { callTool } from "../mcp.js";
 import { ensureValidToken } from "../auth.js";
 import { LOGO } from "./logo.js";
-import { style, paint, screenSize, fitWidth, ansiSlice, stripAnsi, parseKey, type KeyEvent } from "./term.js";
+import { style, paint, screenSize, fitWidth, ansiSlice, parseKey, type KeyEvent } from "./term.js";
 import { VERSION } from "../version.js";
 
 // --- Types ---
@@ -186,16 +186,40 @@ function defaultFormCursor(fields: FormField[], filtered: number[], values: Reco
   return firstBlank >= 0 ? firstBlank : executeIndex(filtered);
 }
 
-function fieldTypeBadge(prop: SchemaProperty): string {
-  if (isArrayOfObjects(prop)) return "form";
+type FieldKind = "arrayObj" | "date" | "arrayEnum" | "enum" | "bool" | "arrayText" | "text";
+
+function classifyField(prop: SchemaProperty): FieldKind {
+  if (isArrayOfObjects(prop)) return "arrayObj";
   if (dateFieldFormat(prop)) return "date";
   const eVals = prop.enum || prop.items?.enum;
-  if (prop.type === "boolean") return "yes/no";
-  if (eVals && prop.type === "array") return "multi";
-  if (eVals) return "select";
-  if (prop.type === "array") return "list";
+  if (prop.type === "boolean") return "bool";
+  if (eVals && prop.type === "array") return "arrayEnum";
+  if (eVals) return "enum";
+  if (prop.type === "array") return "arrayText";
+  return "text";
+}
+
+function fieldTypeBadge(prop: SchemaProperty): string {
+  const badges: Record<FieldKind, string> = {
+    arrayObj: "form", date: "date", bool: "yes/no", arrayEnum: "multi",
+    enum: "select", arrayText: "list", text: "text",
+  };
+  const badge = badges[classifyField(prop)];
+  if (badge !== "text") return badge;
   if (prop.type === "integer" || prop.type === "number") return "number";
   return "text";
+}
+
+function footerForFieldKind(kind: FieldKind): string {
+  switch (kind) {
+    case "arrayObj": return "\u2191\u2193 navigate \u00B7 enter add/edit \u00B7 backspace delete \u00B7 esc back";
+    case "date": return "\u2190\u2192 part \u00B7 \u2191\u2193 adjust \u00B7 t today \u00B7 enter confirm \u00B7 esc cancel";
+    case "arrayEnum": return "space toggle \u00B7 enter confirm \u00B7 esc cancel";
+    case "arrayText": return "\u2191\u2193 navigate \u00B7 enter add/edit \u00B7 backspace delete \u00B7 esc confirm";
+    case "enum":
+    case "bool": return "\u2191\u2193 navigate \u00B7 enter confirm \u00B7 esc cancel";
+    case "text": return "enter confirm \u00B7 esc cancel";
+  }
 }
 
 function formFieldValueDisplay(value: string, maxWidth: number): string {
@@ -495,7 +519,7 @@ function renderCommandList(state: AppState): string[] {
     if (i === Math.floor(LOGO.length / 2) - 1) {
       content.push(` ${logoLine}  ${style.boldYellow("Readwise")} ${style.dim("v" + VERSION)}`);
     } else if (i === Math.floor(LOGO.length / 2)) {
-      content.push(` ${logoLine}  ${style.dim("Built for AI agents · this TUI is just for fun")}`);
+      content.push(` ${logoLine}  ${style.dim("Built for AI agents · This TUI is just for fun/learning")}`);
     } else {
       content.push(` ${logoLine}`);
     }
@@ -571,16 +595,223 @@ function renderForm(state: AppState): string[] {
   const tool = state.selectedTool!;
   const fields = state.fields;
   const toolTitle = humanLabel(tool.name, toolPrefix(tool));
-  // Build title: tool name + any stack breadcrumb
-  const stackParts = state.formStack.map((e) => e.parentFieldName);
-  const title = stackParts.length > 0
-    ? toolTitle + " › " + stackParts.join(" › ")
-    : toolTitle;
 
-  if (state.formEditing && state.formEditFieldIdx >= 0) {
-    return renderFormEditMode(state, title, fields, contentHeight, innerWidth);
+  // Sub-forms (nested array-of-objects) keep existing form UI
+  if (state.formStack.length > 0) {
+    const stackParts = state.formStack.map((e) => e.parentFieldName);
+    const title = toolTitle + " › " + stackParts.join(" › ");
+    if (state.formEditing && state.formEditFieldIdx >= 0) {
+      return renderFormEditMode(state, title, fields, contentHeight, innerWidth);
+    }
+    return renderFormPaletteMode(state, title, fields, contentHeight, innerWidth);
   }
-  return renderFormPaletteMode(state, title, fields, contentHeight, innerWidth);
+
+  // Top-level: command builder
+  return renderCommandBuilder(state, toolTitle, fields, contentHeight, innerWidth);
+}
+
+function renderCommandBuilder(
+  state: AppState, title: string, fields: FormField[],
+  contentHeight: number, innerWidth: number,
+): string[] {
+  const tool = state.selectedTool!;
+  const cmdName = tool.name.replace(/_/g, "-");
+  const content: string[] = [];
+  const editField = state.formEditing && state.formEditFieldIdx >= 0
+    ? fields[state.formEditFieldIdx]!
+    : null;
+
+  // Header
+  content.push("");
+  content.push("  " + style.bold(title));
+  if (tool.description) {
+    const wrapped = wrapText(tool.description, innerWidth - 4);
+    for (const line of wrapped) {
+      content.push("  " + style.dim(line));
+    }
+  }
+  content.push("");
+
+  // Classify editing field type once for both content and footer
+  const editKind = editField ? classifyField(editField.prop) : null;
+  const isTextLikeEdit = editKind === "text";
+
+  // Build command lines
+  const argLines: string[] = [];
+  for (const field of fields) {
+    const flagName = field.name.replace(/_/g, "-");
+    if (field === editField) {
+      if (isTextLikeEdit) {
+        // Inline cursor for text fields
+        const buf = state.formInputBuf;
+        const before = buf.slice(0, state.formInputCursorPos);
+        const cursorChar = state.formInputCursorPos < buf.length ? buf[state.formInputCursorPos]! : " ";
+        const after = state.formInputCursorPos < buf.length ? buf.slice(state.formInputCursorPos + 1) : "";
+        argLines.push("    --" + flagName + "=" + style.cyan(before) + style.inverse(cursorChar) + style.cyan(after));
+      } else if (isArrayOfObjects(field.prop)) {
+        // Array-of-objects: show item count
+        const existing = state.formValues[field.name] || "[]";
+        let items: unknown[] = [];
+        try { items = JSON.parse(existing); } catch { /* */ }
+        const label = items.length > 0 ? `[${items.length} item${items.length > 1 ? "s" : ""}]` : "[...]";
+        argLines.push("    --" + flagName + "=" + style.yellow(label));
+      } else {
+        // Non-text editors (enum, bool, date): show pending
+        argLines.push("    --" + flagName + "=" + style.inverse(" "));
+      }
+    } else {
+      const val = state.formValues[field.name];
+      if (val) {
+        const needsQuotes = val.includes(" ") || val.includes(",");
+        const displayVal = needsQuotes ? '"' + val + '"' : val;
+        argLines.push("    --" + flagName + "=" + style.cyan(displayVal));
+      }
+    }
+  }
+
+  // Render command with line continuations
+  const cmdPrefix = "  " + style.dim("$") + " " + style.dim("readwise") + " " + cmdName;
+  if (argLines.length === 0) {
+    content.push(cmdPrefix);
+  } else {
+    content.push(cmdPrefix + " \\");
+    for (let i = 0; i < argLines.length; i++) {
+      const isLast = i === argLines.length - 1;
+      content.push(argLines[i]! + (isLast ? "" : " \\"));
+    }
+  }
+
+  content.push("");
+
+  // Context area: field description, editor, or ready state
+  if (editField) {
+    // Field description
+    if (editField.prop.description) {
+      content.push("  " + style.dim(editField.prop.description));
+    }
+    if (editField.prop.examples?.length) {
+      const exStr = editField.prop.examples.map((e: unknown) => typeof e === "string" ? e : JSON.stringify(e)).join(", ");
+      content.push("  " + style.dim("e.g. ") + style.cyan(truncateVisible(exStr, innerWidth - 10)));
+    }
+    if (editField.prop.default != null) {
+      content.push("  " + style.dim("default: " + editField.prop.default));
+    }
+
+    const eVals = editField.prop.enum || editField.prop.items?.enum;
+
+    if (editKind === "bool") {
+      content.push("");
+      const choices = ["true", "false"];
+      for (let ci = 0; ci < choices.length; ci++) {
+        const sel = ci === state.formEnumCursor;
+        content.push(sel ? "  " + style.cyan(style.bold("\u203A " + choices[ci]!)) : "    " + choices[ci]!);
+      }
+    } else if (editKind === "enum" && eVals) {
+      content.push("");
+      for (let ci = 0; ci < eVals.length; ci++) {
+        const sel = ci === state.formEnumCursor;
+        content.push(sel ? "  " + style.cyan(style.bold("\u203A " + eVals[ci]!)) : "    " + eVals[ci]!);
+      }
+    } else if (editKind === "arrayEnum" && eVals) {
+      content.push("");
+      for (let ci = 0; ci < eVals.length; ci++) {
+        const sel = ci === state.formEnumCursor;
+        const checked = state.formEnumSelected.has(ci);
+        const check = checked ? style.cyan("[x]") : style.dim("[ ]");
+        content.push((sel ? "  \u203A " : "    ") + check + " " + eVals[ci]!);
+      }
+    } else if (editKind === "date") {
+      const dateFmt = dateFieldFormat(editField.prop)!;
+      content.push("");
+      content.push("  " + renderDateParts(state.dateParts, state.datePartCursor, dateFmt));
+    } else if (editKind === "arrayText") {
+      const existing = state.formValues[editField.name] || "";
+      const items = existing ? existing.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+      content.push("");
+      for (let i = 0; i < items.length; i++) {
+        const isCursor = i === state.formEnumCursor;
+        content.push((isCursor ? "  \u276F " : "    ") + style.cyan(items[i]!));
+      }
+      const onInput = state.formEnumCursor === items.length;
+      content.push((onInput ? "  \u276F " : "    ") + style.cyan(state.formInputBuf) + (onInput ? style.inverse(" ") : ""));
+    } else if (editKind === "arrayObj") {
+      const existing = state.formValues[editField.name] || "[]";
+      let items: unknown[] = [];
+      try { items = JSON.parse(existing); } catch { /* */ }
+      content.push("");
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i] as Record<string, unknown>;
+        const summary = Object.entries(item)
+          .filter(([, v]) => v != null && v !== "")
+          .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+          .join(", ");
+        const isCursor = i === state.formEnumCursor;
+        content.push((isCursor ? "  \u276F " : "    ") + truncateVisible(summary || "(empty)", innerWidth - 6));
+      }
+      if (items.length > 0) content.push("");
+      const addCursor = state.formEnumCursor === items.length;
+      content.push(addCursor
+        ? "  " + style.inverse(style.green(" + Add new item "))
+        : "  " + style.dim("+") + " Add new item");
+    } else if (isTextLikeEdit) {
+      // Text field: cursor is already inline in the command string
+      // Just show a hint if empty
+      if (!state.formInputBuf) {
+        content.push("");
+        content.push("  " + style.dim("Type a value and press enter"));
+      }
+    }
+  } else {
+    // Ready state / optional picker
+    const missing = missingRequiredFields(fields, state.formValues);
+    if (missing.length > 0) {
+      content.push("  " + style.red("Missing: " + missing.map((f) => f.name).join(", ")));
+    } else {
+      content.push("  " + style.dim("Press enter to run"));
+    }
+
+    // Always show optional params
+    const optionalFields = fields
+      .map((f, i) => ({ field: f, idx: i }))
+      .filter(({ field }) => !field.required);
+    if (optionalFields.length > 0) {
+      content.push("");
+      content.push("  " + style.dim("Optional parameters (tab to add)"));
+      content.push("");
+      const maxFlagWidth = Math.max(...optionalFields.map(({ field }) => field.name.length), 0) + 2;
+      for (let i = 0; i < optionalFields.length; i++) {
+        const { field } = optionalFields[i]!;
+        const flagName = field.name.replace(/_/g, "-");
+        const hasValue = !!state.formValues[field.name]?.trim();
+        const sel = state.formShowOptional && i === state.formListCursor;
+        const prefix = sel ? " \u276F " : "   ";
+        const paddedName = flagName.padEnd(maxFlagWidth);
+        const desc = field.prop.description
+          ? style.dim(truncateVisible(field.prop.description, innerWidth - maxFlagWidth - 8))
+          : "";
+        if (sel) {
+          content.push(style.boldYellow(prefix + paddedName) + "  " + desc);
+        } else if (hasValue) {
+          content.push(prefix + style.green(paddedName) + "  " + desc);
+        } else {
+          content.push(prefix + style.dim(paddedName) + "  " + desc);
+        }
+      }
+    }
+  }
+
+  // Footer
+  const footer = editKind
+    ? style.dim(footerForFieldKind(editKind))
+    : state.formShowOptional
+    ? style.dim("\u2191\u2193 select \u00B7 enter add \u00B7 esc done")
+    : style.dim("enter run \u00B7 tab add option \u00B7 esc back");
+
+  return renderLayout({
+    breadcrumb: style.boldYellow("Readwise") + style.dim(" \u203A ") + style.bold(title),
+    content,
+    footer,
+  });
 }
 
 function renderFormPaletteMode(
@@ -821,14 +1052,10 @@ function renderFormEditMode(
   content.push("");
 
   // Editor area
+  const kind = classifyField(field.prop);
   const eVals = field.prop.enum || field.prop.items?.enum;
-  const isArrayObj = isArrayOfObjects(field.prop);
-  const isArrayEnum = !isArrayObj && field.prop.type === "array" && !!field.prop.items?.enum;
-  const isArrayText = !isArrayObj && field.prop.type === "array" && !field.prop.items?.enum;
-  const isBool = field.prop.type === "boolean";
-  const dateFmt = dateFieldFormat(field.prop);
 
-  if (isArrayObj) {
+  if (kind === "arrayObj") {
     // Array-of-objects editor: show existing items + "Add new item"
     const existing = state.formValues[field.name] || "[]";
     let items: unknown[] = [];
@@ -852,9 +1079,10 @@ function renderFormEditMode(
     } else {
       content.push(" " + style.dim("+") + " Add new item");
     }
-  } else if (dateFmt) {
+  } else if (kind === "date") {
+    const dateFmt = dateFieldFormat(field.prop)!;
     content.push("  " + renderDateParts(state.dateParts, state.datePartCursor, dateFmt));
-  } else if (isArrayEnum && eVals) {
+  } else if (kind === "arrayEnum" && eVals) {
     // Multi-select picker
     for (let ci = 0; ci < eVals.length; ci++) {
       const isCursor = ci === state.formEnumCursor;
@@ -864,7 +1092,7 @@ function renderFormEditMode(
       const label = marker + check + " " + eVals[ci]!;
       content.push(isCursor ? style.bold(label) : label);
     }
-  } else if (isArrayText) {
+  } else if (kind === "arrayText") {
     // Tag-style list editor: navigable items + text input at bottom
     const existing = state.formValues[field.name] || "";
     const items = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean) : [];
@@ -887,8 +1115,8 @@ function renderFormEditMode(
       content.push("   " + style.dim("enter  ") + style.dim("edit item"));
       content.push("   " + style.dim("bksp   ") + style.dim("remove item"));
     }
-  } else if (eVals || isBool) {
-    const choices = isBool ? ["true", "false"] : eVals!;
+  } else if (kind === "enum" || kind === "bool") {
+    const choices = kind === "bool" ? ["true", "false"] : eVals!;
     for (let ci = 0; ci < choices.length; ci++) {
       const sel = ci === state.formEnumCursor;
       const choiceLine = (sel ? "   › " : "     ") + choices[ci]!;
@@ -899,13 +1127,14 @@ function renderFormEditMode(
     const prefix0 = "  ";
     if (!state.formInputBuf) {
       // Show placeholder text when input is empty
-      const placeholder = field.prop.examples?.length
-        ? String(field.prop.examples[0])
-        : field.prop.description
-        ? field.prop.description.toLowerCase().replace(/[.!]$/, "")
-        : field.prop.type === "integer" || field.prop.type === "number"
-        ? "enter a number"
-        : "type a value";
+      let placeholder = "type a value";
+      if (field.prop.examples?.length) {
+        placeholder = String(field.prop.examples[0]);
+      } else if (field.prop.description) {
+        placeholder = field.prop.description.toLowerCase().replace(/[.!]$/, "");
+      } else if (field.prop.type === "integer" || field.prop.type === "number") {
+        placeholder = "enter a number";
+      }
       content.push(prefix0 + style.inverse(" ") + style.dim(" " + placeholder + "…"));
     } else {
       const lines = state.formInputBuf.split("\n");
@@ -935,7 +1164,7 @@ function renderFormEditMode(
   }
 
   // Show remaining required fields hint (for text editors)
-  if (!isArrayObj && !dateFmt && !isArrayEnum && !isArrayText && !(eVals || isBool)) {
+  if (kind === "text") {
     const requiredFields = fields.filter((f) => f.required);
     const filledCount = requiredFields.filter((f) => {
       if (f.name === field.name) return !!state.formInputBuf.trim(); // current field
@@ -952,25 +1181,10 @@ function renderFormEditMode(
     }
   }
 
-  let footer: string;
-  if (isArrayObj) {
-    footer = style.dim("↑↓ navigate · enter add/edit · backspace delete · esc back");
-  } else if (dateFmt) {
-    footer = style.dim("←→ part · ↑↓ adjust · t today · enter confirm · esc cancel");
-  } else if (isArrayEnum) {
-    footer = style.dim("space toggle · enter select · esc confirm");
-  } else if (isArrayText) {
-    footer = style.dim("↑↓ navigate · enter add/edit · backspace delete · esc confirm");
-  } else if (eVals || isBool) {
-    footer = style.dim("↑↓ navigate · enter confirm · esc cancel");
-  } else {
-    footer = style.dim("enter confirm · esc cancel");
-  }
-
   return renderLayout({
     breadcrumb: style.boldYellow("Readwise") + style.dim(" › ") + style.bold(title),
     content,
-    footer,
+    footer: style.dim(footerForFieldKind(kind)),
   });
 }
 
@@ -1214,11 +1428,7 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
 
         const formValues: Record<string, string> = {};
         for (const f of fields) {
-          if (f.prop.default != null) {
-            formValues[f.name] = String(f.prop.default);
-          } else {
-            formValues[f.name] = "";
-          }
+          formValues[f.name] = "";
         }
 
         if (fields.length === 0) {
@@ -1246,14 +1456,11 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
         }
 
         const filteredIndices = filterFormFields(fields, "");
-
-        // Auto-open the first blank required field for editing
         const firstBlankRequired = fields.findIndex((f) => f.required && !formValues[f.name]?.trim());
-        const autoEdit = firstBlankRequired >= 0;
 
-        return {
+        const baseState: AppState = {
           ...s,
-          view: "form",
+          view: "form" as View,
           selectedTool: tool,
           fields,
           nameColWidth,
@@ -1261,12 +1468,10 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
           formSearchQuery: "",
           formSearchCursorPos: 0,
           formFilteredIndices: filteredIndices,
-          formListCursor: autoEdit
-            ? filteredIndices.indexOf(firstBlankRequired)
-            : defaultFormCursor(fields, filteredIndices, formValues),
+          formListCursor: defaultFormCursor(fields, filteredIndices, formValues),
           formScrollTop: 0,
-          formEditFieldIdx: autoEdit ? firstBlankRequired : -1,
-          formEditing: autoEdit,
+          formEditFieldIdx: -1,
+          formEditing: false,
           formInputBuf: "",
           formInputCursorPos: 0,
           formEnumCursor: 0,
@@ -1274,6 +1479,12 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
           formShowRequired: false, formShowOptional: false,
           formStack: [],
         };
+
+        // Auto-open first required field
+        if (firstBlankRequired >= 0) {
+          return startEditingField(baseState, firstBlankRequired);
+        }
+        return baseState;
       }
     }
     return s;
@@ -1304,9 +1515,155 @@ function handleCommandListInput(state: AppState, key: KeyEvent): AppState | "exi
   return s;
 }
 
+function startEditingField(state: AppState, fieldIdx: number): AppState {
+  const field = state.fields[fieldIdx]!;
+  if (isArrayOfObjects(field.prop)) {
+    const existing = state.formValues[field.name] || "[]";
+    let items: unknown[] = [];
+    try { items = JSON.parse(existing); } catch { /* */ }
+    return { ...state, formEditing: true, formEditFieldIdx: fieldIdx, formEnumCursor: items.length };
+  }
+  const dateFmt = dateFieldFormat(field.prop);
+  if (dateFmt) {
+    const existing = state.formValues[field.name] || "";
+    const parts = parseDateParts(existing, dateFmt) || todayParts(dateFmt);
+    return { ...state, formEditing: true, formEditFieldIdx: fieldIdx, dateParts: parts, datePartCursor: 0 };
+  }
+  const enumValues = field.prop.enum || field.prop.items?.enum;
+  const isBool = field.prop.type === "boolean";
+  const isArrayEnum = !isArrayOfObjects(field.prop) && field.prop.type === "array" && !!field.prop.items?.enum;
+  if (isArrayEnum && enumValues) {
+    const curVal = state.formValues[field.name] || "";
+    const selected = new Set<number>();
+    if (curVal) {
+      const parts = curVal.split(",").map((s) => s.trim());
+      for (const p of parts) {
+        const idx = enumValues.indexOf(p);
+        if (idx >= 0) selected.add(idx);
+      }
+    }
+    return { ...state, formEditing: true, formEditFieldIdx: fieldIdx, formEnumCursor: 0, formEnumSelected: selected };
+  }
+  if (enumValues || isBool) {
+    const choices = isBool ? ["true", "false"] : enumValues!;
+    const curVal = state.formValues[field.name] || "";
+    const idx = choices.indexOf(curVal);
+    return { ...state, formEditing: true, formEditFieldIdx: fieldIdx, formEnumCursor: idx >= 0 ? idx : 0 };
+  }
+  if (field.prop.type === "array" && !field.prop.items?.enum) {
+    const existing = state.formValues[field.name] || "";
+    const itemCount = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean).length : 0;
+    return { ...state, formEditing: true, formEditFieldIdx: fieldIdx, formInputBuf: "", formInputCursorPos: 0, formEnumCursor: itemCount };
+  }
+  const editBuf = state.formValues[field.name] || "";
+  return { ...state, formEditing: true, formEditFieldIdx: fieldIdx, formInputBuf: editBuf, formInputCursorPos: editBuf.length };
+}
+
 function handleFormInput(state: AppState, key: KeyEvent): AppState | "submit" {
-  if (state.formEditing) return handleFormEditInput(state, key);
-  return handleFormPaletteInput(state, key);
+  // Sub-forms use existing palette/edit handlers
+  if (state.formStack.length > 0) {
+    if (state.formEditing) return handleFormEditInput(state, key);
+    return handleFormPaletteInput(state, key);
+  }
+
+  // Command builder: editing a field
+  if (state.formEditing) {
+    const result = handleFormEditInput(state, key);
+    if (result === "submit") return result;
+    // Auto-advance: if editing just ended via confirm (not cancel), jump to next blank required field
+    if (!result.formEditing && state.formEditing) {
+      const wasCancel = key.name === "escape";
+      if (!wasCancel) {
+        const nextBlank = result.fields.findIndex((f) => f.required && !result.formValues[f.name]?.trim());
+        if (nextBlank >= 0) {
+          return startEditingField(result, nextBlank);
+        }
+      }
+    }
+    return result;
+  }
+
+  // Command builder: optional picker
+  if (state.formShowOptional) {
+    return handleOptionalPickerInput(state, key);
+  }
+
+  // Command builder: ready state
+  return handleCommandBuilderReadyInput(state, key);
+}
+
+function commandListReset(tools: ToolDef[]): Partial<AppState> {
+  const filteredItems = buildCommandList(tools);
+  const sel = selectableIndices(filteredItems);
+  return {
+    view: "commands" as View, selectedTool: null,
+    searchQuery: "", searchCursorPos: 0,
+    filteredItems, listCursor: sel[0] ?? 0, listScrollTop: 0,
+  };
+}
+
+function handleCommandBuilderReadyInput(state: AppState, key: KeyEvent): AppState | "submit" {
+  if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+    return { ...state, ...commandListReset(state.tools) };
+  }
+
+  if (key.name === "return") {
+    if (missingRequiredFields(state.fields, state.formValues).length === 0) {
+      return "submit";
+    }
+    // Jump to first missing required field
+    const nextBlank = state.fields.findIndex((f) => f.required && !state.formValues[f.name]?.trim());
+    if (nextBlank >= 0) {
+      return startEditingField(state, nextBlank);
+    }
+    return state;
+  }
+
+  if (key.name === "tab") {
+    const hasOptional = state.fields.some((f) => !f.required);
+    if (hasOptional) {
+      return { ...state, formShowOptional: true, formListCursor: 0 };
+    }
+    return state;
+  }
+
+  // Backspace: re-edit last set field
+  if (key.name === "backspace") {
+    for (let i = state.fields.length - 1; i >= 0; i--) {
+      if (state.formValues[state.fields[i]!.name]?.trim()) {
+        return startEditingField(state, i);
+      }
+    }
+    return state;
+  }
+
+  return state;
+}
+
+function handleOptionalPickerInput(state: AppState, key: KeyEvent): AppState | "submit" {
+  const optionalFields = state.fields
+    .map((f, i) => ({ field: f, idx: i }))
+    .filter(({ field }) => !field.required);
+
+  if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+    return { ...state, formShowOptional: false };
+  }
+
+  if (key.name === "up") {
+    return { ...state, formListCursor: state.formListCursor > 0 ? state.formListCursor - 1 : optionalFields.length - 1 };
+  }
+  if (key.name === "down") {
+    return { ...state, formListCursor: state.formListCursor < optionalFields.length - 1 ? state.formListCursor + 1 : 0 };
+  }
+
+  if (key.name === "return") {
+    const selected = optionalFields[state.formListCursor];
+    if (selected) {
+      return startEditingField({ ...state, formShowOptional: false }, selected.idx);
+    }
+  }
+
+  return state;
 }
 
 function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "submit" {
@@ -1353,9 +1710,7 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
         formInputCursorPos: 0,
       };
     }
-    const resetFiltered = buildCommandList(state.tools);
-    const resetSel = selectableIndices(resetFiltered);
-    return { ...state, view: "commands", selectedTool: null, searchQuery: "", searchCursorPos: 0, filteredItems: resetFiltered, listCursor: resetSel[0] ?? 0, listScrollTop: 0 };
+    return { ...state, ...commandListReset(state.tools) };
   }
 
   // Tab: jump to next unfilled required field
@@ -1476,48 +1831,7 @@ function handleFormPaletteInput(state: AppState, key: KeyEvent): AppState | "sub
       return { ...state, formShowRequired: true };
     }
     if (highlightedIdx !== undefined && highlightedIdx >= 0 && highlightedIdx < fields.length) {
-      const field = fields[highlightedIdx]!;
-      // Array-of-objects: enter edit mode with cursor on "Add new item"
-      if (isArrayOfObjects(field.prop)) {
-        const existing = state.formValues[field.name] || "[]";
-        let items: unknown[] = [];
-        try { items = JSON.parse(existing); } catch { /* */ }
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formEnumCursor: items.length };
-      }
-      const dateFmt = dateFieldFormat(field.prop);
-      const enumValues = field.prop.enum || field.prop.items?.enum;
-      const isBool = field.prop.type === "boolean";
-      if (dateFmt) {
-        const existing = state.formValues[field.name] || "";
-        const parts = parseDateParts(existing, dateFmt) || todayParts(dateFmt);
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, dateParts: parts, datePartCursor: 0 };
-      }
-      const isArrayEnum = !isArrayOfObjects(field.prop) && field.prop.type === "array" && !!field.prop.items?.enum;
-      if (isArrayEnum && enumValues) {
-        const curVal = state.formValues[field.name] || "";
-        const selected = new Set<number>();
-        if (curVal) {
-          const parts = curVal.split(",").map((s) => s.trim());
-          for (const p of parts) {
-            const idx = enumValues.indexOf(p);
-            if (idx >= 0) selected.add(idx);
-          }
-        }
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formEnumCursor: 0, formEnumSelected: selected };
-      }
-      if (enumValues || isBool) {
-        const choices = isBool ? ["true", "false"] : enumValues!;
-        const curVal = state.formValues[field.name] || "";
-        const idx = choices.indexOf(curVal);
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formEnumCursor: idx >= 0 ? idx : 0 };
-      }
-      if (field.prop.type === "array" && !field.prop.items?.enum) {
-        const existing = state.formValues[field.name] || "";
-        const itemCount = existing ? existing.split(",").map((s) => s.trim()).filter(Boolean).length : 0;
-        return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: "", formInputCursorPos: 0, formEnumCursor: itemCount };
-      }
-      const editBuf = state.formValues[field.name] || "";
-      return { ...state, formEditing: true, formEditFieldIdx: highlightedIdx, formInputBuf: editBuf, formInputCursorPos: editBuf.length };
+      return startEditingField(state, highlightedIdx);
     }
     return state;
   }
@@ -1554,7 +1868,7 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
 
   const resetPalette = (updatedValues?: Record<string, string>) => {
     const f = filterFormFields(fields, "");
-    return { formSearchQuery: "", formSearchCursorPos: 0, formFilteredIndices: f, formListCursor: defaultFormCursor(fields, f, updatedValues ?? formValues), formScrollTop: 0, formShowRequired: false };
+    return { formSearchQuery: "", formSearchCursorPos: 0, formFilteredIndices: f, formListCursor: defaultFormCursor(fields, f, updatedValues ?? formValues), formScrollTop: 0, formShowRequired: false, formShowOptional: false };
   };
 
   // Escape: cancel edit (for multi-select and tag editor, escape confirms since items are saved live)
@@ -1902,57 +2216,26 @@ function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
   // Any other key cancels quit confirm
   const s = state.quitConfirm ? { ...state, quitConfirm: false } : state;
 
+  const resultsClear = { result: "", error: "", resultScroll: 0, resultScrollX: 0 };
+
   const goBack = (): AppState => {
-    const resetFiltered = buildCommandList(s.tools);
-    const resetSel = selectableIndices(resetFiltered);
-    const searchReset = { searchQuery: "", searchCursorPos: 0, filteredItems: resetFiltered, listCursor: resetSel[0] ?? 0, listScrollTop: 0 };
-    const hasParams = s.selectedTool && Object.keys(s.selectedTool.inputSchema.properties || {}).length > 0;
+    const isEmpty = !s.error && s.result !== EMPTY_LIST_SENTINEL && !s.result.trim();
+    const hasParams = !isEmpty && s.selectedTool && Object.keys(s.selectedTool.inputSchema.properties || {}).length > 0;
     if (hasParams) {
+      const f = filterFormFields(s.fields, "");
       return {
-        ...s, view: "form" as View, result: "", error: "", resultScroll: 0, resultScrollX: 0,
+        ...s, view: "form" as View, ...resultsClear,
         formSearchQuery: "", formSearchCursorPos: 0,
-        formFilteredIndices: filterFormFields(s.fields, ""),
-        formListCursor: defaultFormCursor(s.fields, filterFormFields(s.fields, ""), s.formValues), formScrollTop: 0,
+        formFilteredIndices: f,
+        formListCursor: defaultFormCursor(s.fields, f, s.formValues), formScrollTop: 0,
         formEditing: false, formEditFieldIdx: -1, formShowRequired: false, formShowOptional: false,
       };
     }
-    return { ...s, view: "commands" as View, selectedTool: null, result: "", error: "", resultScroll: 0, resultScrollX: 0, ...searchReset };
+    return { ...s, ...commandListReset(s.tools), ...resultsClear };
   };
 
-  // Enter on success/empty-list/error screens → go back
-  if (key.name === "return") {
-    const isEmpty = !s.error && s.result !== EMPTY_LIST_SENTINEL && !s.result.trim();
-    if (isEmpty) {
-      // Success screen → back to main menu
-      const resetFiltered = buildCommandList(s.tools);
-      const resetSel = selectableIndices(resetFiltered);
-      const searchReset = { searchQuery: "", searchCursorPos: 0, filteredItems: resetFiltered, listCursor: resetSel[0] ?? 0, listScrollTop: 0 };
-      return { ...s, view: "commands", selectedTool: null, result: "", error: "", resultScroll: 0, resultScrollX: 0, ...searchReset };
-    }
+  if (key.name === "return" || key.name === "escape") {
     return goBack();
-  }
-
-  if (key.name === "escape") {
-    const isEmpty = !s.error && s.result !== EMPTY_LIST_SENTINEL && !s.result.trim();
-    const resetFiltered = buildCommandList(s.tools);
-    const resetSel = selectableIndices(resetFiltered);
-    const searchReset = { searchQuery: "", searchCursorPos: 0, filteredItems: resetFiltered, listCursor: resetSel[0] ?? 0, listScrollTop: 0 };
-    if (isEmpty) {
-      // Success screen → back to main menu
-      return { ...s, view: "commands", selectedTool: null, result: "", error: "", resultScroll: 0, resultScrollX: 0, ...searchReset };
-    }
-    // Data or error → back to form if it has params, otherwise main menu
-    const hasParams = s.selectedTool && Object.keys(s.selectedTool.inputSchema.properties || {}).length > 0;
-    if (hasParams) {
-      return {
-        ...s, view: "form", result: "", error: "", resultScroll: 0, resultScrollX: 0,
-        formSearchQuery: "", formSearchCursorPos: 0,
-        formFilteredIndices: filterFormFields(s.fields, ""),
-        formListCursor: defaultFormCursor(s.fields, filterFormFields(s.fields, ""), s.formValues), formScrollTop: 0,
-        formEditing: false, formEditFieldIdx: -1, formShowRequired: false, formShowOptional: false,
-      };
-    }
-    return { ...s, view: "commands", selectedTool: null, result: "", error: "", resultScroll: 0, resultScrollX: 0, ...searchReset };
   }
 
   if (key.name === "up") {
