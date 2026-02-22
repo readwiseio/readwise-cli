@@ -93,9 +93,10 @@ async function main() {
   const forceRefresh = process.argv.includes("--refresh");
   const positionalArgs = process.argv.slice(2).filter((a) => !a.startsWith("--"));
   const hasSubcommand = positionalArgs.length > 0;
+  const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h");
 
-  // If no subcommand, TTY, and authenticated → launch TUI
-  if (!hasSubcommand && process.stdout.isTTY && config.access_token) {
+  // If no subcommand, TTY, and authenticated → launch TUI (unless --help)
+  if (!hasSubcommand && !wantsHelp && process.stdout.isTTY && config.access_token) {
     try {
       const { token, authType } = await ensureValidToken();
       const tools = await getTools(token, authType, forceRefresh);
@@ -115,6 +116,13 @@ async function main() {
     return;
   }
 
+  // If not authenticated and trying a non-login command, tell user to log in
+  if (!config.access_token && hasSubcommand && positionalArgs[0] !== "login" && positionalArgs[0] !== "login-with-token") {
+    process.stderr.write("\x1b[31mNot logged in.\x1b[0m Run `readwise login` or `readwise login-with-token` to authenticate.\n");
+    process.exitCode = 1;
+    return;
+  }
+
   // Try to load tools if we have a token (for subcommand mode)
   if (config.access_token) {
     try {
@@ -123,7 +131,6 @@ async function main() {
       registerTools(program, tools);
     } catch (err) {
       // Don't fail — login command should still work
-      // Only warn if user is trying to run a non-login command
       if (hasSubcommand && positionalArgs[0] !== "login" && positionalArgs[0] !== "login-with-token") {
         process.stderr.write(`\x1b[33mWarning: Could not fetch tools: ${(err as Error).message}\x1b[0m\n`);
       }
