@@ -1,3 +1,4 @@
+import { exec } from "node:child_process";
 import type { ToolDef, SchemaProperty } from "../config.js";
 import { resolveProperty } from "../commands.js";
 import { callTool } from "../mcp.js";
@@ -27,6 +28,18 @@ interface FormStackEntry {
 
 function isArrayOfObjects(prop: SchemaProperty): boolean {
   return prop.type === "array" && !!prop.items?.properties;
+}
+
+type CardKind = "document" | "highlight";
+
+interface CardItem {
+  kind: CardKind;
+  title: string;
+  summary: string;
+  note: string;       // highlight note (only for highlights)
+  meta: string;       // "Source · Author · 12 min"
+  url: string;        // for opening on enter
+  raw: Record<string, unknown>;  // full object for fallback
 }
 
 interface AppState {
@@ -66,6 +79,9 @@ interface AppState {
   error: string;
   resultScroll: number;
   resultScrollX: number;
+  resultCards: CardItem[];    // parsed card items for card view
+  resultCursor: number;       // selected card index
+  resultCardScroll: number;   // scroll offset for cards
   // Spinner
   spinnerFrame: number;
 }
@@ -333,6 +349,188 @@ function wrapText(text: string, width: number): string[] {
   }
   if (current) lines.push(current);
   return lines.length > 0 ? lines : [""];
+}
+
+// --- Card parsing helpers ---
+
+function extractCards(data: unknown): CardItem[] | null {
+  let items: unknown[];
+  if (Array.isArray(data)) {
+    items = data;
+  } else if (typeof data === "object" && data !== null) {
+    // Look for a "results" array or similar
+    const obj = data as Record<string, unknown>;
+    const arrayKey = Object.keys(obj).find((k) => Array.isArray(obj[k]) && (obj[k] as unknown[]).length > 0);
+    if (arrayKey) {
+      items = obj[arrayKey] as unknown[];
+    } else {
+      return null;
+    }
+  } else {
+    return null;
+  }
+
+  if (items.length === 0) return null;
+  // Only works for arrays of objects
+  if (typeof items[0] !== "object" || items[0] === null || Array.isArray(items[0])) return null;
+
+  const cards = items.map((item) => {
+    const obj = item as Record<string, unknown>;
+    const kind = isHighlightObj(obj) ? "highlight" : "document";
+    if (kind === "highlight") {
+      const attrs = (typeof obj.attributes === "object" && obj.attributes !== null)
+        ? obj.attributes as Record<string, unknown> : null;
+      return {
+        kind,
+        title: str(attrs?.document_title || obj.title || obj.readable_title || ""),
+        summary: str(attrs?.highlight_plaintext || obj.text || obj.summary || obj.content || ""),
+        note: str(attrs?.highlight_note || obj.note || obj.notes || ""),
+        meta: extractHighlightMeta(obj),
+        url: extractCardUrl(obj),
+        raw: obj,
+      };
+    }
+    return {
+      kind,
+      title: extractDocTitle(obj),
+      summary: extractDocSummary(obj),
+      note: "",
+      meta: extractDocMeta(obj),
+      url: extractCardUrl(obj),
+      raw: obj,
+    };
+  }) as CardItem[];
+
+  // Skip card view if most items have no meaningful content (e.g. just URLs)
+  const hasContent = cards.filter((c) => c.summary || c.note || (c.kind === "document" && c.title !== "Untitled" && !c.raw.url?.toString().includes(c.title)));
+  if (hasContent.length < cards.length / 2) return null;
+
+  return cards;
+}
+
+function str(val: unknown): string {
+  if (val === null || val === undefined) return "";
+  return String(val);
+}
+
+function isHighlightObj(obj: Record<string, unknown>): boolean {
+  // Reader docs with category "highlight"
+  if (obj.category === "highlight") return true;
+  // Readwise search highlights: nested attributes with highlight_plaintext
+  const attrs = obj.attributes;
+  if (typeof attrs === "object" && attrs !== null && "highlight_plaintext" in (attrs as Record<string, unknown>)) return true;
+  // Readwise highlights: have text + highlight-specific fields
+  if (typeof obj.text === "string" &&
+    ("highlighted_at" in obj || "color" in obj || "book_id" in obj || "location_type" in obj)) {
+    return true;
+  }
+  // Has text + note fields (common highlight shape even without highlighted_at)
+  if (typeof obj.text === "string" && "note" in obj) return true;
+  return false;
+}
+
+// --- Document card helpers ---
+
+function extractDocTitle(obj: Record<string, unknown>): string {
+  for (const key of ["title", "readable_title", "name"]) {
+    const val = obj[key];
+    if (val && typeof val === "string" && !String(val).startsWith("http")) return val as string;
+  }
+  // Last resort: show domain from URL
+  const url = str(obj.url || obj.source_url);
+  if (url) {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch { /* */ }
+  }
+  return "Untitled";
+}
+
+function extractDocSummary(obj: Record<string, unknown>): string {
+  for (const key of ["summary", "description", "note", "notes", "content"]) {
+    const val = obj[key];
+    if (val && typeof val === "string") return val;
+  }
+  return "";
+}
+
+function extractDocMeta(obj: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  const siteName = str(obj.site_name);
+  if (siteName) parts.push(siteName);
+
+  const author = str(obj.author);
+  if (author && author !== siteName) parts.push(author);
+
+  const category = str(obj.category);
+  if (category) parts.push(category);
+
+  const wordCount = Number(obj.word_count);
+  if (wordCount > 0) {
+    const mins = Math.ceil(wordCount / 250);
+    parts.push(`${mins} min`);
+  }
+
+  const progress = Number(obj.reading_progress);
+  if (progress > 0 && progress < 1) {
+    parts.push(`${Math.round(progress * 100)}% read`);
+  } else if (progress >= 1) {
+    parts.push("finished");
+  }
+
+  const date = str(obj.created_at || obj.saved_at || obj.published_date);
+  if (date) {
+    const d = new Date(date);
+    if (!isNaN(d.getTime())) {
+      parts.push(d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
+    }
+  }
+
+  return parts.join(" · ");
+}
+
+// --- Highlight card helpers ---
+
+function extractHighlightMeta(obj: Record<string, unknown>): string {
+  const attrs = (typeof obj.attributes === "object" && obj.attributes !== null)
+    ? obj.attributes as Record<string, unknown> : null;
+  const parts: string[] = [];
+
+  // Source book/article author
+  const author = str(attrs?.document_author || obj.author || obj.book_author);
+  if (author && !author.startsWith("http")) parts.push(author);
+
+  // Category
+  const category = str(attrs?.document_category || obj.category);
+  if (category) parts.push(category);
+
+  const color = str(obj.color);
+  if (color) parts.push(color);
+
+  // Tags (from attributes or top-level)
+  const tags = attrs?.highlight_tags || obj.tags;
+  if (Array.isArray(tags) && tags.length > 0) {
+    const tagNames = tags.map((t: unknown) =>
+      typeof t === "object" && t !== null ? str((t as Record<string, unknown>).name) : str(t)
+    ).filter(Boolean);
+    if (tagNames.length > 0) parts.push(tagNames.join(", "));
+  }
+
+  const date = str(obj.highlighted_at || obj.created_at);
+  if (date) {
+    const d = new Date(date);
+    if (!isNaN(d.getTime())) {
+      parts.push(d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
+    }
+  }
+
+  return parts.join(" · ");
+}
+
+function extractCardUrl(obj: Record<string, unknown>): string {
+  for (const key of ["url", "source_url", "reader_url", "readwise_url"]) {
+    if (obj[key] && typeof obj[key] === "string") return obj[key] as string;
+  }
+  return "";
 }
 
 // --- Word boundary helpers ---
@@ -1218,6 +1416,122 @@ const SUCCESS_ICON = [
   " ╚═════╝ ╚═╝  ╚═╝",
 ];
 
+function cardLine(text: string, innerW: number, borderFn: (s: string) => string): string {
+  return "  " + borderFn("│") + " " + fitWidth(text, innerW) + " " + borderFn("│");
+}
+
+function buildCardLines(card: CardItem, ci: number, selected: boolean, cardWidth: number): string[] {
+  const borderColor = selected ? style.cyan : style.dim;
+  const innerW = Math.max(1, cardWidth - 4);
+  const lines: string[] = [];
+
+  lines.push("  " + borderColor("╭" + "─".repeat(cardWidth - 2) + "╮"));
+
+  if (card.kind === "highlight") {
+    // Highlight card: quote-style passage, optional note, meta
+    const quotePrefix = "\u201c ";
+    const quoteSuffix = "\u201d";
+    const passage = card.summary || "\u2026";
+    const maxQuoteW = innerW - quotePrefix.length;
+    const wrapped = wrapText(passage, maxQuoteW);
+    // Cap at 3 lines
+    const showLines = wrapped.slice(0, 3);
+    if (wrapped.length > 3) {
+      const last = showLines[2]!;
+      showLines[2] = truncateVisible(last, maxQuoteW - 1) + "…";
+    }
+    for (let i = 0; i < showLines.length; i++) {
+      let lineText: string;
+      if (i === 0) {
+        lineText = quotePrefix + showLines[i]!;
+        if (showLines.length === 1) lineText += quoteSuffix;
+      } else if (i === showLines.length - 1) {
+        lineText = "  " + showLines[i]! + quoteSuffix;
+      } else {
+        lineText = "  " + showLines[i]!;
+      }
+      const styled = selected ? style.cyan(lineText) : lineText;
+      lines.push(cardLine(styled, innerW, borderColor));
+    }
+
+    // Note (if present)
+    if (card.note) {
+      const noteText = "✏ " + truncateVisible(card.note, innerW - 2);
+      lines.push(cardLine(style.yellow(noteText), innerW, borderColor));
+    }
+
+    // Meta line
+    if (card.meta) {
+      lines.push(cardLine(style.dim(truncateVisible(card.meta, innerW)), innerW, borderColor));
+    }
+  } else {
+    // Document card: title, summary, meta
+    const titleText = truncateVisible(card.title || "Untitled", innerW);
+    const titleStyled = selected ? style.bold(style.cyan(titleText)) : style.bold(titleText);
+    lines.push(cardLine(titleStyled, innerW, borderColor));
+
+    if (card.summary) {
+      const summaryText = truncateVisible(card.summary, innerW);
+      lines.push(cardLine(style.dim(summaryText), innerW, borderColor));
+    }
+
+    if (card.meta) {
+      lines.push(cardLine(style.dim(truncateVisible(card.meta, innerW)), innerW, borderColor));
+    }
+  }
+
+  lines.push("  " + borderColor("╰" + "─".repeat(cardWidth - 2) + "╯"));
+  return lines;
+}
+
+function renderCardView(state: AppState): string[] {
+  const { contentHeight, innerWidth } = getBoxDimensions();
+  const tool = state.selectedTool;
+  const title = tool ? humanLabel(tool.name, toolPrefix(tool)) : "";
+  const cards = state.resultCards;
+  const cardWidth = Math.min(innerWidth - 4, 72);
+
+  const content: string[] = [];
+
+  // Header with count
+  const countInfo = style.dim(` (${state.resultCursor + 1} of ${cards.length})`);
+  content.push("  " + style.bold("Results") + countInfo);
+  content.push("");
+
+  // Build all card lines
+  const allLines: { line: string; cardIdx: number }[] = [];
+  for (let ci = 0; ci < cards.length; ci++) {
+    const cardContentLines = buildCardLines(cards[ci]!, ci, ci === state.resultCursor, cardWidth);
+    for (const line of cardContentLines) {
+      allLines.push({ line, cardIdx: ci });
+    }
+    if (ci < cards.length - 1) {
+      allLines.push({ line: "", cardIdx: ci });
+    }
+  }
+
+  // Scroll so selected card is visible
+  const availableHeight = Math.max(1, contentHeight - content.length);
+  const scroll = state.resultCardScroll;
+  const visible = allLines.slice(scroll, scroll + availableHeight);
+  for (const entry of visible) {
+    content.push(entry.line);
+  }
+
+  const hasUrl = cards[state.resultCursor]?.url;
+  const footerParts = ["↑↓ navigate"];
+  if (hasUrl) footerParts.push("enter open");
+  footerParts.push("esc back", "q quit");
+
+  return renderLayout({
+    breadcrumb: style.boldYellow("Readwise") + style.dim(" › ") + style.bold(title) + style.dim(" › results"),
+    content,
+    footer: state.quitConfirm
+      ? style.yellow("Press q again to quit")
+      : style.dim(footerParts.join(" · ")),
+  });
+}
+
 function renderResults(state: AppState): string[] {
   const { contentHeight, innerWidth } = getBoxDimensions();
   const tool = state.selectedTool;
@@ -1225,6 +1539,11 @@ function renderResults(state: AppState): string[] {
   const isError = !!state.error;
   const isEmptyList = !isError && state.result === EMPTY_LIST_SENTINEL;
   const isEmpty = !isError && !isEmptyList && !state.result.trim();
+
+  // Card view for list results
+  if (!isError && !isEmptyList && !isEmpty && state.resultCards.length > 0) {
+    return renderCardView(state);
+  }
 
   // No results screen for empty lists
   if (isEmptyList) {
@@ -1324,7 +1643,7 @@ function renderState(state: AppState): string[] {
 
 // --- Input handling ---
 
-function handleInput(state: AppState, key: KeyEvent): AppState | "exit" | "submit" {
+function handleInput(state: AppState, key: KeyEvent): AppState | "exit" | "submit" | "openUrl" {
   switch (state.view) {
     case "commands": return handleCommandListInput(state, key);
     case "form": return handleFormInput(state, key);
@@ -2198,10 +2517,40 @@ function handleFormEditInput(state: AppState, key: KeyEvent): AppState | "submit
   return state;
 }
 
-function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
+function cardLineCount(card: CardItem, cardWidth: number): number {
+  const innerW = Math.max(1, cardWidth - 4);
+  if (card.kind === "highlight") {
+    const quoteW = innerW - 2; // account for quote prefix
+    const passage = card.summary || "\u2026";
+    const wrapped = wrapText(passage, quoteW);
+    const textLines = Math.min(wrapped.length, 3);
+    return 2 + textLines + (card.note ? 1 : 0) + (card.meta ? 1 : 0); // top + text + note? + meta? + bottom
+  }
+  return 2 + 1 + (card.summary ? 1 : 0) + (card.meta ? 1 : 0); // top + title + summary? + meta? + bottom
+}
+
+function computeCardScroll(cards: CardItem[], cursor: number, currentScroll: number, availableHeight: number): number {
+  const { innerWidth } = getBoxDimensions();
+  const cardWidth = Math.min(innerWidth - 4, 72);
+  let lineStart = 0;
+  for (let ci = 0; ci < cards.length; ci++) {
+    const card = cards[ci]!;
+    const height = cardLineCount(card, cardWidth);
+    const spacing = ci < cards.length - 1 ? 1 : 0;
+    if (ci === cursor) {
+      const lineEnd = lineStart + height + spacing;
+      if (lineStart < currentScroll) return lineStart;
+      if (lineEnd > currentScroll + availableHeight) return Math.max(0, lineEnd - availableHeight);
+      return currentScroll;
+    }
+    lineStart += height + spacing;
+  }
+  return currentScroll;
+}
+
+function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" | "openUrl" {
   const { contentHeight } = getBoxDimensions();
-  const contentLines = (state.error || state.result).split("\n");
-  const visibleCount = Math.max(1, contentHeight - 3);
+  const inCardMode = state.resultCards.length > 0 && !state.error;
 
   if (key.ctrl && key.name === "c") {
     if (state.quitConfirm) return "exit";
@@ -2216,7 +2565,7 @@ function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
   // Any other key cancels quit confirm
   const s = state.quitConfirm ? { ...state, quitConfirm: false } : state;
 
-  const resultsClear = { result: "", error: "", resultScroll: 0, resultScrollX: 0 };
+  const resultsClear = { result: "", error: "", resultScroll: 0, resultScrollX: 0, resultCards: [] as CardItem[], resultCursor: 0, resultCardScroll: 0 };
 
   const goBack = (): AppState => {
     const isEmpty = !s.error && s.result !== EMPTY_LIST_SENTINEL && !s.result.trim();
@@ -2234,10 +2583,58 @@ function handleResultsInput(state: AppState, key: KeyEvent): AppState | "exit" {
     return { ...s, ...commandListReset(s.tools), ...resultsClear };
   };
 
-  if (key.name === "return" || key.name === "escape") {
+  if (key.name === "escape") {
     return goBack();
   }
 
+  if (inCardMode) {
+    const cards = s.resultCards;
+    // 2 lines used by header + blank
+    const availableHeight = Math.max(1, contentHeight - 2);
+
+    if (key.name === "return") {
+      const card = cards[s.resultCursor];
+      if (card?.url) return "openUrl";
+      return goBack();
+    }
+
+    if (key.name === "up") {
+      if (s.resultCursor > 0) {
+        const newCursor = s.resultCursor - 1;
+        const newScroll = computeCardScroll(cards, newCursor, s.resultCardScroll, availableHeight);
+        return { ...s, resultCursor: newCursor, resultCardScroll: newScroll };
+      }
+      return s;
+    }
+    if (key.name === "down") {
+      if (s.resultCursor < cards.length - 1) {
+        const newCursor = s.resultCursor + 1;
+        const newScroll = computeCardScroll(cards, newCursor, s.resultCardScroll, availableHeight);
+        return { ...s, resultCursor: newCursor, resultCardScroll: newScroll };
+      }
+      return s;
+    }
+    if (key.name === "pageup") {
+      const newCursor = Math.max(0, s.resultCursor - 5);
+      const newScroll = computeCardScroll(cards, newCursor, s.resultCardScroll, availableHeight);
+      return { ...s, resultCursor: newCursor, resultCardScroll: newScroll };
+    }
+    if (key.name === "pagedown") {
+      const newCursor = Math.min(cards.length - 1, s.resultCursor + 5);
+      const newScroll = computeCardScroll(cards, newCursor, s.resultCardScroll, availableHeight);
+      return { ...s, resultCursor: newCursor, resultCardScroll: newScroll };
+    }
+
+    return s;
+  }
+
+  // Text mode fallback
+  const contentLines = (state.error || state.result).split("\n");
+  const visibleCount = Math.max(1, contentHeight - 3);
+
+  if (key.name === "return") {
+    return goBack();
+  }
   if (key.name === "up") {
     return { ...s, resultScroll: Math.max(0, s.resultScroll - 1) };
   }
@@ -2391,7 +2788,7 @@ async function executeTool(state: AppState): Promise<AppState> {
 
     if (res.isError) {
       const errMsg = res.content.map((c) => c.text || "").filter(Boolean).join("\n");
-      return { ...state, view: "results", error: errMsg || "Unknown error", result: "", resultScroll: 0, resultScrollX: 0 };
+      return { ...state, view: "results", error: errMsg || "Unknown error", result: "", resultScroll: 0, resultScrollX: 0, resultCards: [], resultCursor: 0, resultCardScroll: 0 };
     }
 
     const text = res.content.filter((c) => c.type === "text" && c.text).map((c) => c.text!).join("\n");
@@ -2399,21 +2796,24 @@ async function executeTool(state: AppState): Promise<AppState> {
     const structured = (res as Record<string, unknown>).structuredContent;
     let formatted: string;
     let emptyList = false;
+    let parsedData: unknown = undefined;
     if (!text && structured !== undefined) {
+      parsedData = structured;
       emptyList = isEmptyListResult(structured);
       formatted = formatJsonPretty(structured);
     } else {
       try {
-        const parsed = JSON.parse(text);
-        emptyList = isEmptyListResult(parsed);
-        formatted = formatJsonPretty(parsed);
+        parsedData = JSON.parse(text);
+        emptyList = isEmptyListResult(parsedData);
+        formatted = formatJsonPretty(parsedData);
       } catch {
         formatted = text;
       }
     }
-    return { ...state, view: "results", result: emptyList ? EMPTY_LIST_SENTINEL : formatted, error: "", resultScroll: 0, resultScrollX: 0 };
+    const cards = parsedData !== undefined ? extractCards(parsedData) || [] : [];
+    return { ...state, view: "results", result: emptyList ? EMPTY_LIST_SENTINEL : formatted, error: "", resultScroll: 0, resultScrollX: 0, resultCards: cards, resultCursor: 0, resultCardScroll: 0 };
   } catch (err) {
-    return { ...state, view: "results", error: (err as Error).message, result: "", resultScroll: 0, resultScrollX: 0 };
+    return { ...state, view: "results", error: (err as Error).message, result: "", resultScroll: 0, resultScrollX: 0, resultCards: [], resultCursor: 0, resultCardScroll: 0 };
   }
 }
 
@@ -2455,6 +2855,9 @@ export async function runApp(tools: ToolDef[]): Promise<void> {
     error: "",
     resultScroll: 0,
     resultScrollX: 0,
+    resultCards: [],
+    resultCursor: 0,
+    resultCardScroll: 0,
     spinnerFrame: 0,
   };
 
@@ -2511,6 +2914,15 @@ export async function runApp(tools: ToolDef[]): Promise<void> {
 
       if (result === "exit") {
         cleanup();
+        return;
+      }
+
+      if (result === "openUrl") {
+        const card = state.resultCards[state.resultCursor];
+        if (card?.url) {
+          const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+          exec(`${cmd} ${JSON.stringify(card.url)}`);
+        }
         return;
       }
 
