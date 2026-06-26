@@ -160,6 +160,15 @@ async function main() {
   const positionalArgs = process.argv.slice(2).filter((a) => !a.startsWith("--"));
   const hasSubcommand = positionalArgs.length > 0;
   const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h");
+  const wantsVersion = process.argv.includes("--version") || process.argv.includes("-V");
+
+  // `--version`/`-V` must never touch the network. Let Commander print the
+  // version and exit, instead of falling into the TUI/tool-discovery path below
+  // (which would hang if MCP is unreachable).
+  if (wantsVersion) {
+    await program.parseAsync(process.argv);
+    return;
+  }
 
   // If no subcommand, TTY, and authenticated → launch TUI (unless --help)
   if (!hasSubcommand && !wantsHelp && process.stdout.isTTY && config.access_token) {
