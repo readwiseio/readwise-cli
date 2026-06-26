@@ -8,6 +8,11 @@ const DISCOVERY_URL = "https://readwise.io/o/.well-known/oauth-authorization-ser
 const REDIRECT_URI = "http://localhost:6274/callback";
 const SCOPES = "openid read write";
 
+// Bound network calls so a stalled connection errors instead of hanging the CLI
+// indefinitely. These run on the normal authed command path (token refresh),
+// so an unbounded fetch here looks identical to the MCP hang.
+const HTTP_TIMEOUT_MS = 30_000;
+
 interface OAuthMetadata {
   authorization_endpoint: string;
   token_endpoint: string;
@@ -15,7 +20,7 @@ interface OAuthMetadata {
 }
 
 async function discover(): Promise<OAuthMetadata> {
-  const res = await fetch(DISCOVERY_URL);
+  const res = await fetch(DISCOVERY_URL, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`OAuth discovery failed: ${res.status} ${res.statusText}`);
   return (await res.json()) as OAuthMetadata;
 }
@@ -242,6 +247,7 @@ export async function ensureValidToken(): Promise<{ token: string; authType: "oa
         grant_type: "refresh_token",
         refresh_token: config.refresh_token,
       }),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
 
     if (!res.ok) {
