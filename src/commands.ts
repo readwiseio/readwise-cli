@@ -39,7 +39,7 @@ export function resolveProperty(prop: SchemaProperty, defs?: Record<string, Sche
   return p;
 }
 
-function optionFlag(name: string, prop: SchemaProperty): string {
+export function optionFlag(name: string, prop: SchemaProperty): string {
   const flag = `--${name.replace(/_/g, "-")}`;
 
   if (prop.type === "boolean") {
@@ -48,7 +48,7 @@ function optionFlag(name: string, prop: SchemaProperty): string {
   return `${flag} <value>`;
 }
 
-function parseValue(value: string, prop: SchemaProperty): unknown {
+export function parseValue(value: string, prop: SchemaProperty): unknown {
   if (prop.type === "integer" || prop.type === "number") {
     const n = Number(value);
     if (isNaN(n)) throw new Error(`Expected a number for value: ${value}`);
