@@ -151,6 +151,38 @@ function summarizeToolsCache(config: Config, now: number): ToolsCacheState {
   };
 }
 
+function knownSecretValues(config: Config): string[] {
+  return [
+    config.access_token,
+    config.refresh_token,
+    config.client_secret,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function redactKnownSecretText(value: string, secrets: string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    redacted = redacted.split(secret).join("[REDACTED]");
+  }
+  return redacted;
+}
+
+function redactKnownSecrets<T>(value: T, secrets: string[]): T {
+  if (secrets.length === 0) return value;
+  if (typeof value === "string") return redactKnownSecretText(value, secrets) as T;
+  if (Array.isArray(value)) {
+    return value.map((item) => redactKnownSecrets(item, secrets)) as T;
+  }
+  if (typeof value === "object" && value !== null) {
+    const redacted: Record<string, unknown> = {};
+    for (const [key, childValue] of Object.entries(value)) {
+      redacted[key] = redactKnownSecrets(childValue, secrets);
+    }
+    return redacted as T;
+  }
+  return value;
+}
+
 async function readDefaultConfigFile(): Promise<{ state: ConfigFileState; config: Config }> {
   const path = getConfigPath();
 
@@ -253,6 +285,7 @@ export async function collectDoctorArtifact(options: DoctorOptions = {}): Promis
 
   const generatedAtMs = deps.now();
   const { state: configFile, config } = await deps.phase("doctor.config", () => deps.readConfigFile());
+  const secrets = knownSecretValues(config);
   const checks: Check[] = [];
 
   if (!configFile.exists) {
@@ -336,7 +369,7 @@ export async function collectDoctorArtifact(options: DoctorOptions = {}): Promis
     checks: checks.map((check) => ({ name: check.name, status: check.status })),
   });
 
-  return artifact;
+  return redactKnownSecrets(artifact, secrets);
 }
 
 export function registerDoctorCommand(program: Command): void {

@@ -44,7 +44,7 @@ test("doctor artifact captures auth failures without leaking configured secrets"
         config,
       }),
       ensureValidToken: async () => {
-        throw new Error("Token refresh failed: refresh_token=secret-refresh-token Authorization: Bearer secret-access-token");
+        throw new Error("Token refresh failed for secret-access-token: refresh_token=secret-refresh-token Authorization: Bearer secret-access-token");
       },
       getTools: async () => {
         throw new Error("should not fetch tools when auth fails");
