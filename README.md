@@ -183,3 +183,21 @@ npm run build
 # Run without building
 npx tsx src/index.ts --help
 ```
+
+## Releasing
+
+Merging a feature PR does not publish it to users. Users receive CLI changes only after a new npm version is published by the `Publish npm package` GitHub Action.
+
+To ship a release:
+
+1. Bump `package.json` and `package-lock.json` to the next version in a release PR.
+2. Merge the release PR to `master`.
+3. Create and publish a GitHub Release whose tag exactly matches the package version with a leading `v`, for example `v0.5.8`.
+4. Wait for the `Publish npm package` action to complete. It builds the CLI, checks that the release tag matches `package.json`, verifies the lockfile versions, and publishes to npm through trusted publishing.
+5. Confirm npm shows the new version:
+
+```bash
+npm view @readwise/cli version
+```
+
+If a version is prepared but never published, skip it and bump to the next version. npm versions do not need to be contiguous.
