@@ -6,6 +6,7 @@ import { getTools } from "./mcp.js";
 import { registerTools, toolNameToCommand } from "./commands.js";
 import { loadConfig, saveConfig, getConfigValue, setConfigValue, getAllConfigEntries, filterReadOnlyTools } from "./config.js";
 import { diagnostics } from "./diagnostics.js";
+import { registerDoctorCommand } from "./doctor.js";
 import { VERSION } from "./version.js";
 import { registerSkillsCommands } from "./skills.js";
 
@@ -49,6 +50,7 @@ function readHiddenInput(prompt: string): Promise<string> {
 }
 
 const program = new Command();
+const STATIC_COMMANDS = new Set(["login", "login-with-token", "config", "skills", "doctor"]);
 
 program
   .name("readwise")
@@ -158,6 +160,8 @@ configCmd
     }
   });
 
+registerDoctorCommand(program);
+
 async function main() {
   diagnostics.start();
 
@@ -165,6 +169,7 @@ async function main() {
   const forceRefresh = process.argv.includes("--refresh");
   const positionalArgs = process.argv.slice(2).filter((a) => !a.startsWith("--"));
   const hasSubcommand = positionalArgs.length > 0;
+  const subcommand = positionalArgs[0];
   const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h");
   const wantsVersion = process.argv.includes("--version") || process.argv.includes("-V");
 
@@ -209,15 +214,15 @@ async function main() {
   registerSkillsCommands(program);
 
   // If not authenticated and trying a non-login command, tell user to log in
-  if (!config.access_token && hasSubcommand && positionalArgs[0] !== "login" && positionalArgs[0] !== "login-with-token" && positionalArgs[0] !== "skills" && positionalArgs[0] !== "config") {
-    diagnostics.error("auth.required", new Error("Not logged in."), { command: positionalArgs[0] });
+  if (!config.access_token && hasSubcommand && !STATIC_COMMANDS.has(subcommand!)) {
+    diagnostics.error("auth.required", new Error("Not logged in."), { command: subcommand });
     process.stderr.write("\x1b[31mNot logged in.\x1b[0m Run `readwise login` or `readwise login-with-token` to authenticate.\n");
     process.exitCode = 1;
     return;
   }
 
   // Try to load tools if we have a token (for subcommand mode)
-  if (config.access_token) {
+  if (config.access_token && !STATIC_COMMANDS.has(subcommand ?? "")) {
     try {
       const { token, authType } = await ensureValidToken();
       let tools = await getTools(token, authType, forceRefresh);

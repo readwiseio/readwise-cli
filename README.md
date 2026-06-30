@@ -120,6 +120,15 @@ readwise reader-export-documents --since-updated "2024-06-01T00:00:00Z"
 
 ## Troubleshooting
 
+Generate a sanitized support artifact with:
+
+```bash
+readwise doctor
+readwise doctor --no-network  # skip authenticated network checks
+```
+
+The artifact is written as JSON and includes CLI/runtime metadata, config/auth/cache state, health checks, a `run_id`, and sanitized errors. It does not include access tokens, refresh tokens, client secrets, or raw config contents.
+
 For support diagnostics, run a command with `--debug` or set `READWISE_CLI_DEBUG=1`:
 
 ```bash
