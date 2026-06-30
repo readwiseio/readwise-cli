@@ -1,0 +1,152 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v0.5.7"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: npm-publish
+
+    steps:
+      - name: Reject prereleases
+        if: github.event_name == 'release' && github.event.release.prerelease
+        run: |
+          echo "::error::This workflow only publishes stable releases to npm's latest dist-tag."
+          exit 1
+
+      - name: Checkout publish tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Use npm with trusted publishing support
+        run: |
+          npm install -g npm@11
+          node --version
+          npm --version
+
+      - name: Validate release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          lockfile_version="$(node -p "require('./package-lock.json').version")"
+          lockfile_package_version="$(node -p "require('./package-lock.json').packages[''].version")"
+          expected_tag="v${package_version}"
+
+          if [[ ! "${package_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::package.json version must be a stable semver version before publishing to npm latest. Got ${package_version}."
+            exit 1
+          fi
+
+          if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]; then
+            echo "::error::Release tag ${RELEASE_TAG} must match package.json version ${package_version}. Expected ${expected_tag}."
+            exit 1
+          fi
+
+          if [[ "${lockfile_version}" != "${package_version}" ]]; then
+            echo "::error::package-lock.json version ${lockfile_version} must match package.json version ${package_version}."
+            exit 1
+          fi
+
+          if [[ "${lockfile_package_version}" != "${package_version}" ]]; then
+            echo "::error::package-lock.json packages[''].version ${lockfile_package_version} must match package.json version ${package_version}."
+            exit 1
+          fi
+
+          git fetch origin master --depth=1
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "::error::Release tag ${RELEASE_TAG} must point to a commit on origin/master."
+            exit 1
+          fi
+
+          echo "name=${package_name}" >> "$GITHUB_OUTPUT"
+          echo "version=${package_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm publish status
+        id: npm
+        env:
+          PACKAGE_NAME: ${{ steps.version.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${PACKAGE_NAME}@${PACKAGE_VERSION} is already published. Skipping npm publish."
+            exit 0
+          fi
+
+          current_latest="$(npm view "${PACKAGE_NAME}" version 2>/dev/null || true)"
+          if [[ -n "${current_latest}" ]]; then
+            node - "${PACKAGE_VERSION}" "${current_latest}" <<'NODE'
+          const [next, current] = process.argv.slice(2);
+          const parse = (version) => version.split(".").map((part) => Number.parseInt(part, 10));
+          const [nextMajor, nextMinor, nextPatch] = parse(next);
+          const [currentMajor, currentMinor, currentPatch] = parse(current);
+          const comparison =
+            nextMajor - currentMajor ||
+            nextMinor - currentMinor ||
+            nextPatch - currentPatch;
+
+          if (comparison <= 0) {
+            console.error(`::error::Refusing to publish ${next} because npm latest is already ${current}.`);
+            process.exit(1);
+          }
+          NODE
+          fi
+
+          echo "already_published=false" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        if: steps.npm.outputs.already_published == 'false'
+        run: npm ci
+
+      - name: Build
+        if: steps.npm.outputs.already_published == 'false'
+        run: npm run build
+
+      - name: Smoke test CLI
+        if: steps.npm.outputs.already_published == 'false'
+        run: |
+          node dist/index.js --version
+          node dist/index.js --help
+
+      - name: Validate package contents
+        if: steps.npm.outputs.already_published == 'false'
+        run: |
+          test -f dist/index.js
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.npm.outputs.already_published == 'false'
+        run: npm publish --access public
