@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { loadConfig, saveConfig, isCacheValid, TOOLS_CACHE_VERSION, type ToolDef } from "./config.js";
+import { diagnostics } from "./diagnostics.js";
 import { VERSION } from "./version.js";
 
 const MCP_URL = "https://mcp2.readwise.io/mcp";
@@ -24,35 +25,38 @@ function createTransport(token: string, authType: "oauth" | "token"): Streamable
 }
 
 export async function getTools(token: string, authType: "oauth" | "token", forceRefresh = false): Promise<ToolDef[]> {
-  if (!forceRefresh) {
-    const config = await loadConfig();
-    if (isCacheValid(config)) {
-      return config.tools_cache!.tools;
+  return await diagnostics.phase("getTools", async () => {
+    if (!forceRefresh) {
+      const config = await loadConfig();
+      if (isCacheValid(config)) {
+        diagnostics.log("tools_cache_hit", { tool_count: config.tools_cache!.tools.length });
+        return config.tools_cache!.tools;
+      }
     }
-  }
 
-  const client = new Client({ name: "readwise", version: VERSION });
-  const transport = createTransport(token, authType);
+    const client = new Client({ name: "readwise", version: VERSION });
+    const transport = createTransport(token, authType);
 
-  try {
-    await client.connect(transport, { timeout: MCP_TIMEOUT_MS });
-    const result = await client.listTools({}, { timeout: MCP_TIMEOUT_MS });
+    try {
+      await diagnostics.phase("mcp.connect", () => client.connect(transport, { timeout: MCP_TIMEOUT_MS }));
+      const result = await diagnostics.phase("mcp.listTools", () => client.listTools({}, { timeout: MCP_TIMEOUT_MS }));
 
-    const tools = result.tools as ToolDef[];
+      const tools = result.tools as ToolDef[];
 
-    // Cache
-    const config = await loadConfig();
-    config.tools_cache = {
-      tools,
-      fetched_at: Date.now(),
-      version: TOOLS_CACHE_VERSION,
-    };
-    await saveConfig(config);
+      // Cache
+      const config = await loadConfig();
+      config.tools_cache = {
+        tools,
+        fetched_at: Date.now(),
+        version: TOOLS_CACHE_VERSION,
+      };
+      await saveConfig(config);
 
-    return tools;
-  } finally {
-    await client.close();
-  }
+      return tools;
+    } finally {
+      await diagnostics.phase("client.close", () => client.close());
+    }
+  });
 }
 
 export async function callTool(
@@ -61,14 +65,20 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean }> {
-  const client = new Client({ name: "readwise", version: VERSION });
-  const transport = createTransport(token, authType);
+  return await diagnostics.phase("callTool", async () => {
+    const client = new Client({ name: "readwise", version: VERSION });
+    const transport = createTransport(token, authType);
 
-  try {
-    await client.connect(transport, { timeout: MCP_TIMEOUT_MS });
-    const result = await client.callTool({ name, arguments: args }, undefined, { timeout: MCP_TIMEOUT_MS });
-    return result as { content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
-  } finally {
-    await client.close();
-  }
+    try {
+      await diagnostics.phase("mcp.connect", () => client.connect(transport, { timeout: MCP_TIMEOUT_MS }), { tool: name });
+      const result = await diagnostics.phase(
+        "mcp.callTool",
+        () => client.callTool({ name, arguments: args }, undefined, { timeout: MCP_TIMEOUT_MS }),
+        { tool: name },
+      );
+      return result as { content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
+    } finally {
+      await diagnostics.phase("client.close", () => client.close(), { tool: name });
+    }
+  }, { tool: name });
 }

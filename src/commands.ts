@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { ensureValidToken } from "./auth.js";
 import { callTool } from "./mcp.js";
+import { diagnostics } from "./diagnostics.js";
 import type { ToolDef, SchemaProperty } from "./config.js";
 
 export function toolNameToCommand(name: string): string {
@@ -150,6 +151,7 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
         const result = await callTool(token, authType, tool.name, args);
         displayResult(result, program.opts().json || false);
       } catch (err) {
+        diagnostics.error("command.action", err, { command: toolNameToCommand(tool.name), tool: tool.name });
         process.stderr.write(`\x1b[31m${(err as Error).message}\x1b[0m\n`);
         process.exitCode = 1;
       }

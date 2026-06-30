@@ -3,6 +3,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { URL } from "node:url";
 import open from "open";
 import { loadConfig, saveConfig, type Config } from "./config.js";
+import { diagnostics } from "./diagnostics.js";
 
 const DISCOVERY_URL = "https://readwise.io/o/.well-known/oauth-authorization-server";
 const REDIRECT_URI = "http://localhost:6274/callback";
@@ -20,27 +21,31 @@ interface OAuthMetadata {
 }
 
 async function discover(): Promise<OAuthMetadata> {
-  const res = await fetch(DISCOVERY_URL, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`OAuth discovery failed: ${res.status} ${res.statusText}`);
-  return (await res.json()) as OAuthMetadata;
+  return await diagnostics.phase("oauth.discover", async () => {
+    const res = await fetch(DISCOVERY_URL, { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`OAuth discovery failed: ${res.status} ${res.statusText}`);
+    return (await res.json()) as OAuthMetadata;
+  });
 }
 
 async function registerClient(registrationEndpoint: string): Promise<{ client_id: string; client_secret: string }> {
-  const res = await fetch(registrationEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "readwise-cli",
-      redirect_uris: [REDIRECT_URI],
-      grant_types: ["authorization_code", "refresh_token"],
-      token_endpoint_auth_method: "client_secret_basic",
-    }),
+  return await diagnostics.phase("oauth.registerClient", async () => {
+    const res = await fetch(registrationEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_name: "readwise-cli",
+        redirect_uris: [REDIRECT_URI],
+        grant_types: ["authorization_code", "refresh_token"],
+        token_endpoint_auth_method: "client_secret_basic",
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Client registration failed: ${res.status} ${body}`);
+    }
+    return (await res.json()) as { client_id: string; client_secret: string };
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Client registration failed: ${res.status} ${body}`);
-  }
-  return (await res.json()) as { client_id: string; client_secret: string };
 }
 
 function generatePKCE(): { verifier: string; challenge: string } {
@@ -116,24 +121,26 @@ async function exchangeToken(
   clientSecret: string,
   codeVerifier: string,
 ): Promise<{ access_token: string; refresh_token: string; expires_in: number }> {
-  const res = await fetch(tokenEndpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
-    },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: REDIRECT_URI,
-      code_verifier: codeVerifier,
-    }),
+  return await diagnostics.phase("oauth.exchangeToken", async () => {
+    const res = await fetch(tokenEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: codeVerifier,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Token exchange failed: ${res.status} ${body}`);
+    }
+    return (await res.json()) as { access_token: string; refresh_token: string; expires_in: number };
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Token exchange failed: ${res.status} ${body}`);
-  }
-  return (await res.json()) as { access_token: string; refresh_token: string; expires_in: number };
 }
 
 export async function login(): Promise<void> {
@@ -215,52 +222,57 @@ export async function logout(): Promise<void> {
 }
 
 export async function ensureValidToken(): Promise<{ token: string; authType: "oauth" | "token" }> {
-  const config = await loadConfig();
+  return await diagnostics.phase("ensureValidToken", async () => {
+    const config = await loadConfig();
 
-  if (!config.access_token) {
-    throw new Error("Not logged in. Run `readwise-cli login` or `readwise-cli login-with-token <token>` first.");
-  }
+    if (!config.access_token) {
+      throw new Error("Not logged in. Run `readwise-cli login` or `readwise-cli login-with-token <token>` first.");
+    }
 
-  const authType = config.auth_type ?? "oauth";
+    const authType = config.auth_type ?? "oauth";
 
-  // Access tokens don't expire and don't need refresh
-  if (authType === "token") {
+    // Access tokens don't expire and don't need refresh
+    if (authType === "token") {
+      return { token: config.access_token, authType };
+    }
+
+    // Refresh if expired or expiring within 60s
+    if (config.expires_at && Date.now() > config.expires_at - 60_000) {
+      const refreshToken = config.refresh_token;
+      const clientId = config.client_id;
+      const clientSecret = config.client_secret;
+      if (!refreshToken || !clientId || !clientSecret) {
+        throw new Error("Cannot refresh token — missing credentials. Run `readwise-cli login` again.");
+      }
+
+      console.error("Refreshing access token...");
+      const metadata = await discover();
+
+      const res = await diagnostics.phase("oauth.refreshToken", () => fetch(metadata.token_endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+        },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+        }),
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      }));
+
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Token refresh failed: ${res.status} ${body}. Run \`readwise-cli login\` again.`);
+      }
+
+      const tokens = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
+      config.access_token = tokens.access_token;
+      if (tokens.refresh_token) config.refresh_token = tokens.refresh_token;
+      config.expires_at = Date.now() + tokens.expires_in * 1000;
+      await saveConfig(config);
+    }
+
     return { token: config.access_token, authType };
-  }
-
-  // Refresh if expired or expiring within 60s
-  if (config.expires_at && Date.now() > config.expires_at - 60_000) {
-    if (!config.refresh_token || !config.client_id || !config.client_secret) {
-      throw new Error("Cannot refresh token — missing credentials. Run `readwise-cli login` again.");
-    }
-
-    console.error("Refreshing access token...");
-    const metadata = await discover();
-
-    const res = await fetch(metadata.token_endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${Buffer.from(`${config.client_id}:${config.client_secret}`).toString("base64")}`,
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: config.refresh_token,
-      }),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
-
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Token refresh failed: ${res.status} ${body}. Run \`readwise-cli login\` again.`);
-    }
-
-    const tokens = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
-    config.access_token = tokens.access_token;
-    if (tokens.refresh_token) config.refresh_token = tokens.refresh_token;
-    config.expires_at = Date.now() + tokens.expires_in * 1000;
-    await saveConfig(config);
-  }
-
-  return { token: config.access_token, authType };
+  });
 }
