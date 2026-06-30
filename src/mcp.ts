@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { loadConfig, saveConfig, isCacheValid, TOOLS_CACHE_VERSION, type ToolDef } from "./config.js";
 import { VERSION } from "./version.js";
 
 const MCP_URL = "https://mcp2.readwise.io/mcp";
+export const RUN_ID = randomUUID();
 
 // Bound every MCP round-trip so a stalled connection (flaky DNS/IPv6, a proxy,
 // a half-open Cloudflare socket) surfaces as an error instead of hanging the
@@ -12,13 +14,25 @@ const MCP_URL = "https://mcp2.readwise.io/mcp";
 // replies.
 const MCP_TIMEOUT_MS = 30_000;
 
+export function userAgent(): string {
+  return `readwise-cli/${VERSION} node/${process.versions.node} ${process.platform}/${process.arch}`;
+}
+
+export function mcpRequestHeaders(authHeader: string, runId = RUN_ID): Record<string, string> {
+  return {
+    Authorization: authHeader,
+    "User-Agent": userAgent(),
+    "X-Readwise-CLI-Version": VERSION,
+    "X-Readwise-CLI-Run-ID": runId,
+    "X-Correlation-ID": runId,
+  };
+}
+
 function createTransport(token: string, authType: "oauth" | "token"): StreamableHTTPClientTransport {
   const authHeader = authType === "token" ? `Token ${token}` : `Bearer ${token}`;
   return new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: {
-      headers: {
-        Authorization: authHeader,
-      },
+      headers: mcpRequestHeaders(authHeader),
     },
   });
 }
