@@ -5,6 +5,7 @@ import { login, loginWithToken, ensureValidToken, logout } from "./auth.js";
 import { getTools } from "./mcp.js";
 import { registerTools, toolNameToCommand } from "./commands.js";
 import { loadConfig, saveConfig, getConfigValue, setConfigValue, getAllConfigEntries, filterReadOnlyTools } from "./config.js";
+import { diagnostics } from "./diagnostics.js";
 import { VERSION } from "./version.js";
 import { registerSkillsCommands } from "./skills.js";
 
@@ -53,6 +54,7 @@ program
   .name("readwise")
   .version(VERSION)
   .description("Command-line interface for Readwise and Reader")
+  .option("--debug", "Print sanitized diagnostic timings to stderr")
   .option("--json", "Output raw JSON (machine-readable)")
   .option("--refresh", "Force-refresh the tool cache");
 
@@ -63,6 +65,7 @@ program
     try {
       await login();
     } catch (err) {
+      diagnostics.error("login", err);
       process.stderr.write(`\x1b[31m${(err as Error).message}\x1b[0m\n`);
       process.exitCode = 1;
     }
@@ -84,6 +87,7 @@ program
       }
       await loginWithToken(token);
     } catch (err) {
+      diagnostics.error("login-with-token", err);
       process.stderr.write(`\x1b[31m${(err as Error).message}\x1b[0m\n`);
       process.exitCode = 1;
     }
@@ -155,7 +159,9 @@ configCmd
   });
 
 async function main() {
-  const config = await loadConfig();
+  diagnostics.start();
+
+  const config = await diagnostics.phase("config.load", () => loadConfig());
   const forceRefresh = process.argv.includes("--refresh");
   const positionalArgs = process.argv.slice(2).filter((a) => !a.startsWith("--"));
   const hasSubcommand = positionalArgs.length > 0;

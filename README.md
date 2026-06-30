@@ -115,7 +115,19 @@ readwise reader-export-documents --since-updated "2024-06-01T00:00:00Z"
 |------|-------------|
 | `--json` | Output raw JSON (for piping to `jq`, scripts, etc.) |
 | `--refresh` | Force-refresh the command list from the server |
+| `--debug` | Print sanitized diagnostic timings to stderr |
 | `--help` | Show all commands or command-specific options |
+
+## Troubleshooting
+
+For support diagnostics, run a command with `--debug` or set `READWISE_CLI_DEBUG=1`:
+
+```bash
+readwise --debug reader-search-documents --query "machine learning" --limit 3
+READWISE_CLI_DEBUG=1 readwise --version
+```
+
+Debug output is written to stderr as structured lines with a `run_id`, CLI version, Node version, platform, phase timings, and sanitized error details. Tokens and tool arguments are not logged.
 
 ## Configuration
 
