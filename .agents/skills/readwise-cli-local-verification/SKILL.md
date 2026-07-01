@@ -17,18 +17,6 @@ Use this skill to verify Readwise CLI changes against the local `rekindled` MCP 
 - Use `--refresh` when proving command discovery so cached production tool metadata cannot hide local MCP failures.
 - Do not claim "full local E2E works" unless auth, tool discovery, and at least one local tool call passed in a fresh run.
 
-## Required Local Services
-
-For full local Docker-backed testing, the local `rekindled` stack must be running before the CLI smoke test starts. From the `rekindled` repo, start these in separate terminals:
-
-```bash
-make serve
-make celery
-make mcp2
-```
-
-Expect Docker to include the local web service, worker dependencies such as database/Redis, Celery, and `mcp2`. If the CLI can reach `mcp2` but tool calls fail upstream, inspect the `web` and Celery logs before assuming the CLI change is broken.
-
 ## Quick Workflow
 
 1. Confirm code-level checks:
