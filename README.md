@@ -10,6 +10,28 @@ Anything you can do in Readwise/Reader, your agent can now do for you.
 npm install -g @readwise/cli
 ```
 
+## Upgrade
+
+If you installed the CLI globally with npm, upgrade to the latest published version with:
+
+```bash
+npm install -g @readwise/cli@latest
+readwise --version
+```
+
+If the version did not change, confirm which binary your shell is using:
+
+```bash
+which readwise
+npm list -g @readwise/cli --depth=0
+```
+
+If you run the CLI with `npx`, request the latest package explicitly:
+
+```bash
+npx @readwise/cli@latest --version
+```
+
 ## Setup
 
 ### Interactive login (opens browser)
