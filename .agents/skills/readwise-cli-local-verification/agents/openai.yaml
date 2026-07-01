@@ -1,4 +1,0 @@
-interface:
-  display_name: "Readwise CLI Local Verification"
-  short_description: "Verify Readwise CLI against local MCP"
-  default_prompt: "Use $readwise-cli-local-verification to verify this Readwise CLI MCP change against local Docker services."
