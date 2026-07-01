@@ -182,9 +182,6 @@ npm run build
 
 # Run without building
 npx tsx src/index.ts --help
-
-# Point the CLI at a local MCP server
-READWISE_MCP_URL=http://localhost:8103/mcp npx tsx src/index.ts --refresh --help
 ```
 
 ## Releasing
