@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { loadConfig, saveConfig, isCacheValid, TOOLS_CACHE_VERSION, type ToolDef } from "./config.js";
 import { VERSION } from "./version.js";
 
-const MCP_URL = "https://mcp2.readwise.io/mcp";
+export const DEFAULT_MCP_URL = "https://mcp2.readwise.io/mcp";
 
 // Bound every MCP round-trip so a stalled connection (flaky DNS/IPv6, a proxy,
 // a half-open Cloudflare socket) surfaces as an error instead of hanging the
@@ -13,6 +13,10 @@ const MCP_URL = "https://mcp2.readwise.io/mcp";
 // replies.
 const MCP_TIMEOUT_MS = 30_000;
 const CLI_RUN_ID = randomUUID();
+
+export function getMcpUrl(): string {
+  return process.env.READWISE_MCP_URL || DEFAULT_MCP_URL;
+}
 
 export function getCliRunId(): string {
   return CLI_RUN_ID;
@@ -35,7 +39,7 @@ export function formatMcpError(phase: string, err: unknown): Error {
 }
 
 function createTransport(token: string, authType: "oauth" | "token"): StreamableHTTPClientTransport {
-  return new StreamableHTTPClientTransport(new URL(MCP_URL), {
+  return new StreamableHTTPClientTransport(new URL(getMcpUrl()), {
     requestInit: {
       headers: getMcpRequestHeaders(token, authType),
     },

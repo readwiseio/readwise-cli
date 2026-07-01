@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatMcpError, getCliRunId, getMcpRequestHeaders } from "../src/mcp.js";
+import {
+  DEFAULT_MCP_URL,
+  formatMcpError,
+  getCliRunId,
+  getMcpRequestHeaders,
+  getMcpUrl,
+} from "../src/mcp.js";
 import { VERSION } from "../src/version.js";
+
+test("MCP URL defaults to production unless overridden", () => {
+  const originalUrl = process.env.READWISE_MCP_URL;
+  delete process.env.READWISE_MCP_URL;
+
+  try {
+    assert.equal(getMcpUrl(), DEFAULT_MCP_URL);
+
+    process.env.READWISE_MCP_URL = "http://localhost:8103/mcp";
+    assert.equal(getMcpUrl(), "http://localhost:8103/mcp");
+  } finally {
+    if (originalUrl === undefined) delete process.env.READWISE_MCP_URL;
+    else process.env.READWISE_MCP_URL = originalUrl;
+  }
+});
 
 test("MCP request headers include auth and CLI correlation metadata", () => {
   const headers = getMcpRequestHeaders("rw-token", "token");
