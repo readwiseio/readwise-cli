@@ -6,8 +6,13 @@ on:
 
 jobs:
   test:
-    name: Test and build
+    name: Test and build (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
 
     steps:
       - name: Checkout
@@ -16,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
@@ -27,3 +32,16 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Smoke test built CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          smoke_home="${RUNNER_TEMP}/readwise-cli-smoke-home-${{ matrix.node-version }}"
+          rm -rf "$smoke_home"
+          mkdir -p "$smoke_home"
+
+          HOME="$smoke_home" node dist/index.js --version
+          HOME="$smoke_home" node dist/index.js --help
+          HOME="$smoke_home" node dist/index.js config show
