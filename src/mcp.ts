@@ -12,6 +12,20 @@ const MCP_URL = "https://mcp2.readwise.io/mcp";
 // replies.
 const MCP_TIMEOUT_MS = 30_000;
 
+export function createMcpFetch(baseFetch: typeof fetch = fetch): typeof fetch {
+  return (url, init) => {
+    const method = (init?.method ?? (url instanceof Request ? url.method : "GET")).toUpperCase();
+    if (method === "GET") {
+      // The CLI never consumes server-initiated MCP messages; opting out avoids
+      // Node 26/undici stalls when the SDK keeps this optional SSE stream open.
+      return Promise.resolve(new Response(null, { status: 405, statusText: "Method Not Allowed" }));
+    }
+    return baseFetch(url, init);
+  };
+}
+
+export const mcpFetch = createMcpFetch();
+
 function createTransport(token: string, authType: "oauth" | "token"): StreamableHTTPClientTransport {
   const authHeader = authType === "token" ? `Token ${token}` : `Bearer ${token}`;
   return new StreamableHTTPClientTransport(new URL(MCP_URL), {
@@ -20,6 +34,7 @@ function createTransport(token: string, authType: "oauth" | "token"): Streamable
         Authorization: authHeader,
       },
     },
+    fetch: mcpFetch,
   });
 }
 
