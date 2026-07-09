@@ -48,18 +48,6 @@ export function optionFlag(name: string, prop: SchemaProperty): string {
   return `${flag} <value>`;
 }
 
-export function optionDescription(prop: SchemaProperty, isRequired: boolean): string | undefined {
-  const parts: string[] = [];
-  if (prop.description) parts.push(prop.description);
-  if (isRequired) parts.push("(required)");
-  const enumValues = prop.enum || prop.items?.enum;
-  if (enumValues) parts.push(`[${enumValues.join(", ")}]`);
-  if (prop.maxLength !== undefined) parts.push(`(max length: ${prop.maxLength})`);
-  if (prop.default !== undefined) parts.push(`(default: ${JSON.stringify(prop.default)})`);
-
-  return parts.join(" ") || undefined;
-}
-
 export function parseValue(value: string, prop: SchemaProperty): unknown {
   if (prop.type === "integer" || prop.type === "number") {
     const n = Number(value);
@@ -134,8 +122,14 @@ export function registerTools(program: Command, tools: ToolDef[]): void {
     for (const [propName, rawProp] of Object.entries(properties)) {
       const prop = resolveProperty(rawProp, defs);
       const flag = optionFlag(propName, prop);
+      const parts: string[] = [];
+      if (prop.description) parts.push(prop.description);
+      if (required.has(propName)) parts.push("(required)");
+      const enumValues = prop.enum || prop.items?.enum;
+      if (enumValues) parts.push(`[${enumValues.join(", ")}]`);
+      if (prop.default !== undefined) parts.push(`(default: ${JSON.stringify(prop.default)})`);
 
-      cmd.option(flag, optionDescription(prop, required.has(propName)));
+      cmd.option(flag, parts.join(" ") || undefined);
     }
 
     cmd.action(async (options: Record<string, string>) => {

@@ -95,7 +95,6 @@ readwise reader-create-document --url "https://example.com/article"
 readwise reader-create-document \
   --url "https://example.com" \
   --title "My Article" \
-  --language "en" \
   --tags "reading-list,research" \
   --notes "Found via HN"
 ```
@@ -115,7 +114,6 @@ readwise reader-move-documents --document-ids <id> --location archive
 readwise reader-bulk-edit-document-metadata --documents '[{"document_id":"<id>","title":"Better Title"}]'
 readwise reader-bulk-edit-document-metadata --documents '[{"document_id":"<id>","seen":true}]'
 readwise reader-bulk-edit-document-metadata --documents '[{"document_id":"<id>","notes":"Updated notes"}]'
-readwise reader-bulk-edit-document-metadata --documents '[{"document_id":"<id>","language":"es"}]'
 ```
 
 ### Highlight management

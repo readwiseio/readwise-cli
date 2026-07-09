@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  optionDescription,
   optionFlag,
   parseValue,
   resolveProperty,
@@ -17,13 +16,6 @@ test("toolNameToCommand converts MCP tool names to CLI command names", () => {
 test("optionFlag formats boolean and value options", () => {
   assert.equal(optionFlag("include_archived", { type: "boolean" }), "--include-archived");
   assert.equal(optionFlag("document_id", { type: "string" }), "--document-id <value>");
-});
-
-test("optionDescription includes schema constraints for generated help", () => {
-  assert.equal(
-    optionDescription({ type: "string", description: "Article language", maxLength: 30 }, true),
-    "Article language (required) (max length: 30)",
-  );
 });
 
 test("parseValue handles numbers, booleans, arrays, and strings", () => {
