@@ -26,6 +26,7 @@ export interface SchemaProperty {
   format?: string;
   description?: string;
   enum?: string[];
+  maxLength?: number;
   items?: SchemaProperty;
   default?: unknown;
   examples?: unknown[];
@@ -58,7 +59,7 @@ export interface Config {
   config?: CLIConfig;
 }
 
-export const TOOLS_CACHE_VERSION = 2;
+export const TOOLS_CACHE_VERSION = 3;
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 

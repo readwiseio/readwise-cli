@@ -68,6 +68,10 @@ test("isCacheValid requires a matching cache version and fresh timestamp", () =>
   assert.equal(isCacheValid({}), false);
 });
 
+test("tool cache version invalidates schemas before Reader language support", () => {
+  assert.equal(TOOLS_CACHE_VERSION, 3);
+});
+
 test("filterReadOnlyTools keeps only tools explicitly annotated read-only", () => {
   const tools: ToolDef[] = [
     {

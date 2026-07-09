@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { loadConfig, saveConfig, isCacheValid, TOOLS_CACHE_VERSION, type ToolDef } from "./config.js";
+import { loadConfig, saveConfig, isCacheValid, TOOLS_CACHE_VERSION, type SchemaProperty, type ToolDef } from "./config.js";
 import { VERSION } from "./version.js";
 
 const MCP_URL = "https://mcp2.readwise.io/mcp";
@@ -26,6 +26,89 @@ export function createMcpFetch(baseFetch: typeof fetch = fetch): typeof fetch {
 
 export const mcpFetch = createMcpFetch();
 
+const CREATE_DOCUMENT_LANGUAGE_PROPERTY: SchemaProperty = {
+  anyOf: [{ type: "string", maxLength: 30 }, { type: "null" }],
+  default: null,
+  description: "Language code for the document. When omitted, Reader will auto-detect it.",
+  examples: ["de", "en-US"],
+};
+
+const BULK_EDIT_LANGUAGE_PROPERTY: SchemaProperty = {
+  anyOf: [{ type: "string", maxLength: 30 }, { type: "null" }],
+  default: null,
+  description: "The new language code for the document",
+  examples: ["de", "en-US"],
+};
+
+function insertPropertyAfter(
+  properties: Record<string, SchemaProperty>,
+  afterName: string,
+  name: string,
+  prop: SchemaProperty,
+): Record<string, SchemaProperty> {
+  if (properties[name]) return properties;
+
+  const next: Record<string, SchemaProperty> = {};
+  let inserted = false;
+  for (const [key, value] of Object.entries(properties)) {
+    next[key] = value;
+    if (key === afterName) {
+      next[name] = prop;
+      inserted = true;
+    }
+  }
+  if (!inserted) next[name] = prop;
+  return next;
+}
+
+function addCreateDocumentLanguageSchema(tool: ToolDef): ToolDef {
+  const properties = tool.inputSchema.properties;
+  if (!properties || properties.language) return tool;
+
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: insertPropertyAfter(properties, "summary", "language", CREATE_DOCUMENT_LANGUAGE_PROPERTY),
+    },
+  };
+}
+
+function addBulkEditLanguageSchema(tool: ToolDef): ToolDef {
+  const defs = tool.inputSchema.$defs;
+  const item = defs?.BulkEditDocumentMetadataItem;
+  const properties = item?.properties;
+  if (!defs || !item || !properties || properties.language) return tool;
+
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      $defs: {
+        ...defs,
+        BulkEditDocumentMetadataItem: {
+          ...item,
+          properties: insertPropertyAfter(properties, "summary", "language", BULK_EDIT_LANGUAGE_PROPERTY),
+        },
+      },
+    },
+  };
+}
+
+export function applyKnownToolSchemaUpdates(tools: ToolDef[]): ToolDef[] {
+  // Keep dynamic CLI/TUI forms aligned with backend capabilities that may ship
+  // before every production MCP listTools response includes the updated schema.
+  return tools.map((tool) => {
+    if (tool.name === "reader_create_document") {
+      return addCreateDocumentLanguageSchema(tool);
+    }
+    if (tool.name === "reader_bulk_edit_document_metadata") {
+      return addBulkEditLanguageSchema(tool);
+    }
+    return tool;
+  });
+}
+
 function createTransport(token: string, authType: "oauth" | "token"): StreamableHTTPClientTransport {
   const authHeader = authType === "token" ? `Token ${token}` : `Bearer ${token}`;
   return new StreamableHTTPClientTransport(new URL(MCP_URL), {
@@ -42,7 +125,7 @@ export async function getTools(token: string, authType: "oauth" | "token", force
   if (!forceRefresh) {
     const config = await loadConfig();
     if (isCacheValid(config)) {
-      return config.tools_cache!.tools;
+      return applyKnownToolSchemaUpdates(config.tools_cache!.tools);
     }
   }
 
@@ -53,7 +136,7 @@ export async function getTools(token: string, authType: "oauth" | "token", force
     await client.connect(transport, { timeout: MCP_TIMEOUT_MS });
     const result = await client.listTools({}, { timeout: MCP_TIMEOUT_MS });
 
-    const tools = result.tools as ToolDef[];
+    const tools = applyKnownToolSchemaUpdates(result.tools as ToolDef[]);
 
     // Cache
     const config = await loadConfig();
