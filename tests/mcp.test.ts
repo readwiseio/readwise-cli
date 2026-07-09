@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyKnownToolSchemaUpdates, createMcpFetch } from "../src/mcp.js";
+import { createMcpFetch } from "../src/mcp.js";
+import { addReaderLanguageSchemas } from "../src/readerLanguageSchema.js";
 import type { ToolDef } from "../src/config.js";
 
 test("mcp fetch opts out of the optional GET SSE stream", async () => {
@@ -59,10 +60,10 @@ test("known schema updates add Reader create language support when missing", () 
     },
   }];
 
-  const [tool] = applyKnownToolSchemaUpdates(tools);
+  const [tool] = addReaderLanguageSchemas(tools);
   const properties = tool!.inputSchema.properties!;
 
-  assert.deepEqual(Object.keys(properties), ["url", "summary", "language", "title"]);
+  assert.deepEqual(Object.keys(properties), ["url", "summary", "title", "language"]);
   assert.equal(properties.language?.description, "Language code for the document. When omitted, Reader will auto-detect it.");
   assert.equal(properties.language?.anyOf?.[0]?.maxLength, 30);
 });
@@ -92,10 +93,10 @@ test("known schema updates add Reader bulk edit language support when missing", 
     },
   }];
 
-  const [tool] = applyKnownToolSchemaUpdates(tools);
+  const [tool] = addReaderLanguageSchemas(tools);
   const properties = tool!.inputSchema.$defs!.BulkEditDocumentMetadataItem!.properties!;
 
-  assert.deepEqual(Object.keys(properties), ["document_id", "summary", "language", "seen"]);
+  assert.deepEqual(Object.keys(properties), ["document_id", "summary", "seen", "language"]);
   assert.equal(properties.language?.description, "The new language code for the document");
   assert.equal(properties.language?.anyOf?.[0]?.maxLength, 30);
 });
