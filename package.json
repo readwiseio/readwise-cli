@@ -2,6 +2,7 @@
   "name": "@readwise/cli",
   "version": "0.5.8",
   "description": "Command-line interface for Readwise and Reader",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/readwiseio/readwise-cli.git"
@@ -14,6 +15,7 @@
     "dist",
     "src",
     "README.md",
+    "LICENSE",
     "tsconfig.json"
   ],
   "scripts": {
