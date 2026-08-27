@@ -226,3 +226,7 @@ npm view @readwise/cli version
 ```
 
 If a version is prepared but never published, skip it and bump to the next version. npm versions do not need to be contiguous.
+
+## License
+
+[MIT](./LICENSE)
