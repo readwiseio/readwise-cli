@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import open from "open";
 import type { ToolDef, SchemaProperty } from "../config.js";
 import { loadConfig, saveConfig, getAllConfigEntries, setConfigValue, filterReadOnlyTools } from "../config.js";
 import { resolveProperty } from "../commands.js";
@@ -549,6 +549,17 @@ function extractCardUrl(obj: Record<string, unknown>): string {
     if (obj[key] && typeof obj[key] === "string") return obj[key] as string;
   }
   return "";
+}
+
+// Card URLs can come from user-saved content (e.g. source_url), so only hand
+// web URLs to the OS opener — not file:// or arbitrary app schemes.
+function isOpenableUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 // --- Word boundary helpers ---
@@ -3102,9 +3113,9 @@ export async function runApp(tools: ToolDef[], allTools: ToolDef[]): Promise<voi
 
       if (result === "openUrl") {
         const card = state.resultCards[state.resultCursor];
-        if (card?.url) {
-          const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-          exec(`${cmd} ${JSON.stringify(card.url)}`);
+        if (card?.url && isOpenableUrl(card.url)) {
+          // Pass the URL as an argument, never through a shell.
+          open(card.url).catch(() => {});
         }
         return;
       }
