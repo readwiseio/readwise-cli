@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -76,7 +76,11 @@ export async function loadConfig(): Promise<Config> {
 }
 
 export async function saveConfig(config: Config): Promise<void> {
-  await writeFile(getConfigPath(), JSON.stringify(config, null, 2) + "\n", "utf-8");
+  // The config holds OAuth tokens and the client secret, so keep it owner-only.
+  // `mode` only applies on creation; chmod tightens files written by older versions.
+  const path = getConfigPath();
+  await writeFile(path, JSON.stringify(config, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+  await chmod(path, 0o600);
 }
 
 export function isCacheValid(config: Config): boolean {
