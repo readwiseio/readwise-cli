@@ -1,6 +1,6 @@
 {
   "name": "@readwise/cli",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "Command-line interface for Readwise and Reader",
   "license": "MIT",
   "repository": {
