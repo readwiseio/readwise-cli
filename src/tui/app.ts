@@ -97,15 +97,25 @@ interface AppState {
 // --- Helpers ---
 
 function humanLabel(toolName: string, prefix: string): string {
-  return toolName
-    .replace(prefix + "_", "")
+  return (prefix ? toolName.replace(prefix + "_", "") : toolName)
     .split("_")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 }
 
+// Tool name prefix -> command list section, in display order
+const TOOL_GROUPS: { prefix: string; label: string }[] = [
+  { prefix: "reader", label: "Reader" },
+  { prefix: "readwise", label: "Readwise" },
+  { prefix: "books", label: "Books" },
+];
+
+function toolGroup(tool: ToolDef): { prefix: string; label: string } {
+  return TOOL_GROUPS.find((g) => tool.name.startsWith(g.prefix + "_")) ?? { prefix: "", label: "Other" };
+}
+
 function toolPrefix(tool: ToolDef): string {
-  return tool.name.startsWith("reader_") ? "reader" : "readwise";
+  return toolGroup(tool).prefix;
 }
 
 interface ListItem {
@@ -118,12 +128,7 @@ interface ListItem {
 function buildCommandList(tools: ToolDef[]): ListItem[] {
   const groups: Record<string, { label: string; items: ListItem[] }> = {};
   for (const tool of tools) {
-    let groupKey: string;
-    let prefix: string;
-    if (tool.name.startsWith("readwise_")) { groupKey = "Readwise"; prefix = "readwise"; }
-    else if (tool.name.startsWith("reader_")) { groupKey = "Reader"; prefix = "reader"; }
-    else { groupKey = "Other"; prefix = ""; }
-
+    const { prefix, label: groupKey } = toolGroup(tool);
     if (!groups[groupKey]) groups[groupKey] = { label: groupKey, items: [] };
     groups[groupKey].items.push({
       label: prefix ? humanLabel(tool.name, prefix) : tool.name,
@@ -131,8 +136,8 @@ function buildCommandList(tools: ToolDef[]): ListItem[] {
       description: tool.description,
     });
   }
-  // Reader first, then Readwise, then anything else
-  const order = ["Reader", "Readwise", "Other"];
+  // TOOL_GROUPS order, then anything else
+  const order = [...TOOL_GROUPS.map((g) => g.label), "Other"];
   const result: ListItem[] = [];
   for (const key of order) {
     const group = groups[key];
